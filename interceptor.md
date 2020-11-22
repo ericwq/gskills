@@ -6,7 +6,12 @@ let's talk about server side interceptor first. client side interceptor is rarel
 ### Interceptor chain execution flow
 There are two functions type. ```UnaryHandler``` and ```UnaryServerInterceptor```. each implementation of type ```UnaryServerInterceptor``` is an interceptor function. while interceptor chain is just a simple slice: ```[]UnaryServerInterceptor```. 
 
-plse note that  ```UnaryServerInterceptor``` function has an ```UnaryHandler``` parameter in the args. and they both share the same return type: ```(interface{}, error)```. both of this design is a key for the design.
+plse note:
+
+* ```UnaryServerInterceptor``` function has an ```UnaryHandler``` argument. 
+* They both share the same return type: ```(interface{}, error)```. 
+
+The above two points are one of the key design. 
 
 ```go
 // UnaryHandler defines the handler invoked by UnaryServerInterceptor to complete the normal
@@ -43,7 +48,7 @@ gRPC need to prepare the interceptor chain when it's ready to create a gRPC serv
    522     chainStreamServerInterceptors(s)                                                                                                
    523     s.cv = sync.NewCond(&s.mu)                                                                                                                         
 ```
-in ```chainUnaryServerInterceptors(s)```, it will prepare a ```[]UnaryServerInterceptor``` and put all interceptor into it. Then it will build an entry Interceptor: ```chainedInt```. who's implementation is to invoke the first element of interceptor chain with ```getChainUnaryHandler(interceptors, 0, info, handler)``` as the las parameter.
+in ```chainUnaryServerInterceptors(s)```, it will prepare a ```[]UnaryServerInterceptor``` and put all interceptors into it. Then it will build an entry Interceptor: ```chainedInt```. who's implementation is to invoke the first element of interceptor chain with ```getChainUnaryHandler(interceptors, 0, info, handler)``` as the last parameter.
 
 ```go
 // chainUnaryServerInterceptors chains all unary server interceptors into one.
@@ -80,7 +85,12 @@ func getChainUnaryHandler(interceptors []UnaryServerInterceptor, curr int, info 
     }
 }
 ```
-while this chain is started (see the next section for detail). the execution flow is as bellow.
+please note:
+
+* ```getChainUnaryHandler``` return an anonymous ```UnaryHandler``` func. the wrapper ensure the func body will not be invoked before the return.
+* ```chainedInt``` return an anonymous ```UnaryServerInterceptor``` func. this is also a wrapper for it.
+
+The above points are one of the key design. While the interceptor chain is ready . The execution flow is as follwing.
 ![source code](images/images.002.png)
 
 ### Launch Intercetor
