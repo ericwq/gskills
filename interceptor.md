@@ -2,16 +2,17 @@
 
 gPRC Interceptor is a powerful mechanism to add addtional logic such as logging, authentication, authorization, metrics, tracing, and any other customer requirements.
 
-let's talk about server side interceptor first. client side interceptor is rarely used in practice.
+Here we only talk about server side interceptor. client side interceptor is very similer to the server side.
+
 ### Interceptor chain execution flow
-There are two functions type. ```UnaryHandler``` and ```UnaryServerInterceptor```. each implementation of type ```UnaryServerInterceptor``` is an interceptor function. while interceptor chain is just a simple slice: ```[]UnaryServerInterceptor```. 
+There are two function type. ```UnaryHandler``` and ```UnaryServerInterceptor```. Each implementation of ```UnaryServerInterceptor``` is an interceptor. The interceptor chain is just a set of interceptors, e.g. simple slice: ```[]UnaryServerInterceptor```. 
 
 plse note:
 
-* ```UnaryServerInterceptor``` function has an ```UnaryHandler``` argument. 
-* They both share the same return type: ```(interface{}, error)```. 
+* ```UnaryServerInterceptor``` function has an ```UnaryHandler``` argument. with it, interceptor can invoke the target service.
+* They both share the same return type: ```(interface{}, error)```. with it, handler can invoke the next interceptor in the chain.
 
-The above two points are one of the key design. 
+Theis is one of the key pints. please remember it. 
 
 ```go
 // UnaryHandler defines the handler invoked by UnaryServerInterceptor to complete the normal
@@ -26,7 +27,7 @@ type UnaryHandler func(ctx context.Context, req interface{}) (interface{}, error
 // to complete the RPC.
 type UnaryServerInterceptor func(ctx context.Context, req interface{}, info *UnaryServerInfo, handler UnaryHandler) (resp interface{}, err error)
 ```
-gRPC need to prepare the interceptor chain when it's ready to create a gRPC server. in ```NewServer()``` func, ```chainUnaryServerInterceptors(s)``` will chain the Interceptors together.
+gRPC can prepare the interceptor chain when it's ready to create a gRPC server. in ```NewServer()``` func, ```chainUnaryServerInterceptors(s)``` will chain the interceptors together.
 ```go
 // NewServer creates a gRPC server which has no service registered and has not       
 // started to accept requests yet.       
@@ -48,7 +49,9 @@ func NewServer(opt ...ServerOption) *Server {
     chainStreamServerInterceptors(s)       
     s.cv = sync.NewCond(&s.mu)                                                                                                                    
 ```
-in ```chainUnaryServerInterceptors(s)```, it will prepare a ```[]UnaryServerInterceptor``` and put all interceptors into it. Then it will build an entry Interceptor: ```chainedInt```. who's implementation is to invoke the first element of interceptor chain with ```getChainUnaryHandler(interceptors, 0, info, handler)``` as the last parameter.
+Inside ```chainUnaryServerInterceptors(s)```, it will prepare a slice ```[]UnaryServerInterceptor``` and put all interceptors into it. Then it will build an ***entry Interceptor*** : ```chainedInt```. The ***entry Interceptor*** is an anonymous interceptor, it's an interceptor wrapper. Who's implementation is to invoke the first element of interceptor chain with ```getChainUnaryHandler(interceptors, 0, info, handler)``` as the parameter. 
+
+before ```chainUnaryServerInterceptors(s)``` return, this anonymous interceptor will not be called. because of the wrapper.
 
 ```go
 // chainUnaryServerInterceptors chains all unary server interceptors into one.
@@ -87,11 +90,22 @@ func getChainUnaryHandler(interceptors []UnaryServerInterceptor, curr int, info 
 ```
 please note:
 
-* ```getChainUnaryHandler``` return an anonymous ```UnaryHandler``` func. the wrapper ensure the func body will not be invoked before the return.
-* ```chainedInt``` return an anonymous ```UnaryServerInterceptor``` func. this is also a wrapper for it.
+* ```getChainUnaryHandler``` return an anonymous ```UnaryHandler``` or the ```finalHandler```. The anonymous wrapper ensure the func body will not be called at this moment.
+* Inside the anonymous ```UnaryHandler```, it will call the next interceptor in the chain. That because the ```UnaryServerInterceptor``` and ```UnaryHandler``` share the same return type, otherwise we can't return the interceptor directly inside the ```UnaryHandler``` *shell*.
 
-The above points are one of the key design. While the interceptor chain is ready . The execution flow is as follwing.
+Now the interceptor chain is ready . The execution flow is as following.
 ![source code](images/images.002.png)
+
+1. start with interceptor[0] and getChainUnaryHandler(0), before the preProcessing, getChainUnaryHandler(0) is called and return the handler wrapper.
+2. now run the preProcessing part of interceptor[0], 
+3. then the  handler wrapper is called. inside the wrapper, call interceptor[1] with getChainUnaryHandler(1) as parameter.
+4. continue the recursioin, until getChainUnaryHandler(2) return  finalHandler.
+5. after finalHandler is called, the postProcessing part of interceptor[2] start, then interceptor[2] finished
+6. control return to the interceptor[1] postProcessing part.
+7. continue the recursioin, until we interceptor[0] finished.
+
+now we only have the interceptor chain, we need a entry point to launch this chain.   
 
 ### Launch Intercetor
 ![source code](images/images.004.png)
+### Use Interceptor
