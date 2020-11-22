@@ -28,25 +28,25 @@ type UnaryServerInterceptor func(ctx context.Context, req interface{}, info *Una
 ```
 gRPC need to prepare the interceptor chain when it's ready to create a gRPC server. in ```NewServer()``` func, ```chainUnaryServerInterceptors(s)``` will chain the Interceptors together.
 ```go
-   505 // NewServer creates a gRPC server which has no service registered and has not                                                                         
-   506 // started to accept requests yet.                                                                                                                       
-   507 func NewServer(opt ...ServerOption) *Server {                                                                                                           
-   508     opts := defaultServerOptions                                                                                                
-   509     for _, o := range opt {                                                                                                     
-   510         o.apply(&opts)                                                                                                          
-   511     }                                                                                                                           
-   512     s := &Server{                                                                                                               
-   513         lis:      make(map[net.Listener]bool),                                                                                  
-   514         opts:     opts,                                                                                                         
-   515         conns:    make(map[transport.ServerTransport]bool),                                                                     
-   516         services: make(map[string]*serviceInfo),                                                                                
-   517         quit:     grpcsync.NewEvent(),                                                                                                                  
-   518         done:     grpcsync.NewEvent(),                                                                                          
-   519         czData:   new(channelzData),                                                                                            
-   520     }                                                                                                                                           
-   521     chainUnaryServerInterceptors(s)
-   522     chainStreamServerInterceptors(s)                                                                                                
-   523     s.cv = sync.NewCond(&s.mu)                                                                                                                         
+// NewServer creates a gRPC server which has no service registered and has not       
+// started to accept requests yet.       
+func NewServer(opt ...ServerOption) *Server {       
+    opts := defaultServerOptions       
+    for _, o := range opt {       
+        o.apply(&opts)       
+    }       
+    s := &Server{       
+        lis:      make(map[net.Listener]bool),       
+        opts:     opts,       
+        conns:    make(map[transport.ServerTransport]bool),       
+        services: make(map[string]*serviceInfo),       
+        quit:     grpcsync.NewEvent(),       
+        done:     grpcsync.NewEvent(),       
+        czData:   new(channelzData),       
+    }       
+    chainUnaryServerInterceptors(s)
+    chainStreamServerInterceptors(s)       
+    s.cv = sync.NewCond(&s.mu)                                                                                                                    
 ```
 in ```chainUnaryServerInterceptors(s)```, it will prepare a ```[]UnaryServerInterceptor``` and put all interceptors into it. Then it will build an entry Interceptor: ```chainedInt```. who's implementation is to invoke the first element of interceptor chain with ```getChainUnaryHandler(interceptors, 0, info, handler)``` as the last parameter.
 
