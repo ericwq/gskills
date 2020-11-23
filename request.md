@@ -33,7 +33,7 @@ Here is the gRPC client application code snippet. we use ```c := pb.NewGreeterCl
     }                               
     log.Printf("Greeting: %s", r.GetMessage())     
 ```
-
+## client stub
 ```c.SayHello()``` is the gRPC client stub. The stub provide the ```"/helloworld.Greeter/SayHello"``` parameter and the ```in``` parameter. 
 please note the specification for the method string argument:
 * Path → ":path" "/" Service-Name "/" {method name} 
@@ -67,6 +67,7 @@ func (c *greeterClient) SayHello(ctx context.Context, in *HelloRequest, opts ...
    37     return invoke(ctx, method, args, reply, cc, opts...)             
    38 }                                                                              
 ```
+## fork road
 ```invoke()``` create a client stream. Here is the main fork road:
 * besides create the client stream, ```newClientStream``` will also process the Request-Headers
 * ```cs.SendMsg(req)``` will process the Length-Prefixed-Message, 
@@ -84,6 +85,7 @@ func invoke(ctx context.Context, method string, req, reply interface{}, cc *Clie
     return cs.RecvMsg(reply)      
 }      
 ```
+### Request-Headers
 ```newClientStream``` will create the clientStream, retry the ```op``` function several times until success or error. 
 please note:
 * ```op``` is a anonymous warpper for the ```a.newStream()```, where ```a``` is the csAttempt we just created with ```cs.newAttemptLocked()```
