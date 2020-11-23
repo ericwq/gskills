@@ -210,7 +210,7 @@ please note:
 For the using, you need to implment an interceptor and add it to the gRPC server. Authough using it is simple, now you understand what happens under the hood. Can you image what happens when you call the ```handler(ctx, req)```? 
 
 ### Implement an interceptor
-I added some comments to make it easier to connect the concept with the previous setion. simple enough, no more to say.
+I added some comments to make it easier to connect the concept with the previous section. The sample is simple enough, no more to say.
 
 ```go
 func unaryInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {      
@@ -236,7 +236,8 @@ func unaryInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServ
 ```
 ### Add the interceptor to the server
 
-Add an interceptor to the server is also simple. Just add some ```ServerOption```.
+Add an interceptor to the server is also simple. Just add some ```ServerOption``` as parameters for ```grpc.NewServer``` func invocation.
+
 ```go
 func main() {      
     flag.Parse()                                      
@@ -279,6 +280,7 @@ type funcServerOption struct {
 func (fdo *funcServerOption) apply(do *serverOptions) {       
     fdo.f(do)       
 }    
+
 // UnaryInterceptor returns a ServerOption that sets the UnaryServerInterceptor for the       
 // server. Only one unary interceptor can be installed. The construction of multiple                                       
 // interceptors (e.g., chaining) can be implemented at the caller.                                       
@@ -290,7 +292,7 @@ func UnaryInterceptor(i UnaryServerInterceptor) ServerOption {
         o.unaryInt = i                                       
     })                                       
 }                                               
-                                                                                                                                                             
+
 // ChainUnaryInterceptor returns a ServerOption that specifies the chained interceptor                                       
 // for unary RPCs. The first interceptor will be the outer most,                                       
 // while the last interceptor will be the inner most wrapper around the real call.                                       
@@ -301,3 +303,5 @@ func ChainUnaryInterceptor(interceptors ...UnaryServerInterceptor) ServerOption 
     })         
 }                 
 ```
+
+The ```UnaryInterceptor``` only add one interceptor. ```ChainUnaryInterceptor``` support add a collection of interceptors.
