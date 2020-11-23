@@ -207,7 +207,7 @@ please note:
 
 ## Use Interceptor
 
-For the using, you need to implment an interceptor and add it to the gRPC server. Authough using it is simple, now you understand what happens under the hood. Can you image what happens when you call the ```handler(ctx, req)```? 
+To use interceptor, you need to implement an interceptor and add it to the gRPC server. Authough using it is simple, now you understand what happens under the hood. Can you image what happens when you call the ```handler(ctx, req)```? 
 
 ### Implement an interceptor
 I added some comments to make it easier to connect the concept with the previous section. The sample is simple enough, no more to say.
