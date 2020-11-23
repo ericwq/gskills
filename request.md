@@ -108,3 +108,23 @@ func newClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, meth
 ...
 }
 ```
+```newStream()``` is will create the transport stream.
+
+```go
+func (a *csAttempt) newStream() error {       
+    cs := a.cs       
+    cs.callHdr.PreviousAttempts = cs.numRetries       
+    s, err := a.t.NewStream(cs.ctx, cs.callHdr)
+    if err != nil {       
+        if _, ok := err.(transport.PerformedIOError); ok {
+            // Return without converting to an RPC error so retry code can
+            // inspect.       
+            return err            
+        }       
+        return toRPCErr(err)     
+    }                                            
+    cs.attempt.s = s       
+    cs.attempt.p = &parser{r: s}       
+    return nil       
+} 
+```
