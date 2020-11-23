@@ -1,6 +1,6 @@
 # gskills
 
-the original goal is to understand the source code of [gRPC-go](https://github.com/grpc/grpc-go). when I was researching the source code. I found a lots of coding skill which deserved to be noted for later reference. here is the content. please be noted alll the content are gRPC-go related. 
+The original goal is to understand the source code of [gRPC-go](https://github.com/grpc/grpc-go). When researching the source code, I found a lots of coding skill which deserved to be noted for later reference. All content are golang and gRPC-go related. 
 
 ## Content 
 
@@ -11,3 +11,5 @@ the original goal is to understand the source code of [gRPC-go](https://github.c
 ### skill 2
 ### skill 3
 
+## License
+Please read the [LICENSE](LICENSE) for more details.
