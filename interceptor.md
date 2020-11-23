@@ -4,7 +4,7 @@ gPRC Interceptor is a powerful mechanism to add addtional logic such as logging,
 
 Here we only talk about server side unary interceptor. client side interceptor and stream interceptor are very similer to the server side.
 
-### Interceptor chain execution flow
+## Interceptor chain execution flow
 There are two function type. ```UnaryHandler``` and ```UnaryServerInterceptor```. Each implementation of ```UnaryServerInterceptor``` is an interceptor. The interceptor chain is just a set of interceptors, e.g. simple slice: ```[]UnaryServerInterceptor```. 
 
 plse note:
@@ -96,7 +96,7 @@ please note:
 Now the interceptor chain is ready . The execution flow is as following.
 ![source code](images/images.002.png)
 
-1. start with interceptor[0] and getChainUnaryHandler(0), before the preProcessing, getChainUnaryHandler(0) is called and return the handler wrapper.
+1. start with interceptor[0] and getChainUnaryHandler(0). Before the preProcessing, getChainUnaryHandler(0) is called and return the handler wrapper.
 2. now run the preProcessing part of interceptor[0], 
 3. then the  handler wrapper is called. inside the wrapper, call interceptor[1] with getChainUnaryHandler(1) as parameter.
 4. continue the recursioin, until getChainUnaryHandler(2) return  finalHandler.
@@ -106,7 +106,7 @@ Now the interceptor chain is ready . The execution flow is as following.
 
 now we only have the interceptor chain, we need a entry point to launch this chain.   
 
-### Launch Intercetor
+## Launch Intercetor
 ```_Greeter_SayHello_Handler``` is the entry point to launch the interceptor chain, while this entry point need to be called by the gRPC.
 
 gRPC will generate the following code to register the business service. Please note the **ServiceName**, **MethodName** and **Handler**. Your business service will not be used directly, the ```_Greeter_SayHello_Handler``` will be used instead. 
@@ -205,4 +205,99 @@ please note:
 
 ```
 
-### Use Interceptor
+## Use Interceptor
+
+For the using, you need to implment an interceptor and add it to the gRPC server. Authough using it is simple, now you understand what happens under the hood. Can you image what happens when you call the ```handler(ctx, req)```? 
+
+### Implement an interceptor
+I added some comments to make it easier to connect the concept with the previous setion. simple enough, no more to say.
+
+```go
+func unaryInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {      
+    //preProcessing part
+    // authentication (token verification)                                                                                              
+    md, ok := metadata.FromIncomingContext(ctx)                                                                                                                 
+    if !ok {                                                                                                                                          
+        return nil, errMissingMetadata      
+    }                                                                                                                                                
+    if !valid(md["authorization"]) {                                                                                                                                      
+        return nil, errInvalidToken                            
+    }         
+    //UnaryHandler part
+    m, err := handler(ctx, req)     
+    
+    //post Processing part
+    if err != nil {      
+        logger("RPC failed with error %v", err)                                                                                                   
+    }      
+    return m, err      
+}      
+
+```
+### Add the interceptor to the server
+
+Add an interceptor to the server is also simple. Just add some ```ServerOption```.
+```go
+func main() {      
+    flag.Parse()                                      
+                                      
+    lis, err := net.Listen("tcp", fmt.Sprintf(":%d", *port))                                      
+    if err != nil {                                      
+        log.Fatalf("failed to listen: %v", err)                                      
+    }                                      
+                                      
+    // Create tls based credential.                                      
+    creds, err := credentials.NewServerTLSFromFile(data.Path("x509/server_cert.pem"), data.Path("x509/server_key.pem"))                                      
+    if err != nil {                                      
+        log.Fatalf("failed to create credentials: %v", err)                                      
+    }                                      
+                                      
+    s := grpc.NewServer(grpc.Creds(creds), grpc.UnaryInterceptor(unaryInterceptor), grpc.StreamInterceptor(streamInterceptor))      
+                                      
+    // Register EchoServer on the server.                                      
+    pb.RegisterEchoServer(s, &server{})                                      
+                                      
+    if err := s.Serve(lis); err != nil {                                      
+        log.Fatalf("failed to serve: %v", err)                                      
+    }                                      
+} 
+```
+Here ```grpc.UnaryInterceptor(unaryInterceptor)``` return ```ServerOption```. Actually its return type is ```funcServerOption```. An implemention of ```ServerOption``` interface.
+
+```go
+// A ServerOption sets options such as credentials, codec and keepalive parameters, etc.       
+type ServerOption interface {       
+    apply(*serverOptions)       
+}       
+
+// funcServerOption wraps a function that modifies serverOptions into an       
+// implementation of the ServerOption interface.       
+type funcServerOption struct {       
+    f func(*serverOptions)       
+}       
+       
+func (fdo *funcServerOption) apply(do *serverOptions) {       
+    fdo.f(do)       
+}    
+// UnaryInterceptor returns a ServerOption that sets the UnaryServerInterceptor for the       
+// server. Only one unary interceptor can be installed. The construction of multiple                                       
+// interceptors (e.g., chaining) can be implemented at the caller.                                       
+func UnaryInterceptor(i UnaryServerInterceptor) ServerOption {                                       
+    return newFuncServerOption(func(o *serverOptions) {                                       
+        if o.unaryInt != nil {                                                                    
+            panic("The unary server interceptor was already set and may not be reset.")                                       
+        }                                                                            
+        o.unaryInt = i                                       
+    })                                       
+}                                               
+                                                                                                                                                             
+// ChainUnaryInterceptor returns a ServerOption that specifies the chained interceptor                                       
+// for unary RPCs. The first interceptor will be the outer most,                                       
+// while the last interceptor will be the inner most wrapper around the real call.                                       
+// All unary interceptors added by this method will be chained.                                       
+func ChainUnaryInterceptor(interceptors ...UnaryServerInterceptor) ServerOption {                                                                                   
+    return newFuncServerOption(func(o *serverOptions) {                                       
+        o.chainUnaryInts = append(o.chainUnaryInts, interceptors...)                                       
+    })         
+}                 
+```
