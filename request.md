@@ -35,6 +35,7 @@ Here is the gRPC client application code snippet. we use ```c := pb.NewGreeterCl
 ```
 ## client stub
 ```c.SayHello()``` is the gRPC client stub. The stub provide the ```"/helloworld.Greeter/SayHello"``` parameter and the ```in``` parameter. 
+
 please note the specification for the method string argument:
 * Path → ":path" "/" Service-Name "/" {method name} 
 * Service-Name → {IDL-specific service name}
@@ -49,7 +50,7 @@ func (c *greeterClient) SayHello(ctx context.Context, in *HelloRequest, opts ...
     return out, nil
 }
 ```
-```Invoke()``` apply the ```CallOptions``` first. If there is any interceptro, use interceptor to perform the job, otherwise call the ```invoke()``` function.
+```Invoke()``` apply the ```CallOptions``` first. If there is any interceptor, use interceptor to perform the task, otherwise call the ```invoke()``` function.
 
 ```go
    25 // Invoke sends the RPC request on the wire and returns after response is                                                                              
@@ -86,9 +87,11 @@ func invoke(ctx context.Context, method string, req, reply interface{}, cc *Clie
 }      
 ```
 ### Request-Headers
-```newClientStream``` will create the clientStream, retry the ```op``` function several times until success or error. 
+```newClientStream``` will create the ```clientStream```, retry the ```op``` function several times until success or error. 
+
 please note:
-* ```op``` is a anonymous warpper for the ```a.newStream()```, where ```a``` is the csAttempt we just created with ```cs.newAttemptLocked()```
+* ```op``` is a anonymous warpper for the ```a.newStream()```, where ```a``` is the ```csAttempt``` we just created with ```cs.newAttemptLocked()```
+
 ```go
 func newClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, method string, opts ...CallOption) (_ ClientStream, err error) {
 ...
