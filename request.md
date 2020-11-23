@@ -7,3 +7,29 @@ Request → Request-Headers *Length-Prefixed-Message EOS.
 * a header frame (Request-Headers), 
 * zero or more data Frame (Length-Prefixed-Message), 
 * the final part is EOS(end of stream) is a flag, set in the last data frame.
+
+## application code
+Here is the gRPC client application code snippet. we use ```c := pb.NewGreeterClient(conn)``` to create the connection. and call ```r, err := c.SayHello(ctx, &pb.HelloRequest{Name: name})``` to send the request over HTTP 2.
+
+```go
+    // Set up a connection to the server.                                       
+    conn, err := grpc.Dial(address, grpc.WithInsecure(), grpc.WithBlock())
+    if err != nil {                                      
+        log.Fatalf("did not connect: %v", err)
+    }                                             
+    defer conn.Close()                                                                                                                 
+    c := pb.NewGreeterClient(conn)
+                                         
+    // Contact the server and print out its response.      
+    name := defaultName              
+    if len(os.Args) > 1 {                                                                                                                                    
+        name = os.Args[1]      
+    }      
+    ctx, cancel := context.WithTimeout(context.Background(), time.Second)      
+    defer cancel()      
+    r, err := c.SayHello(ctx, &pb.HelloRequest{Name: name})      
+    if err != nil {                                  
+        log.Fatalf("could not greet: %v", err)            
+    }                               
+    log.Printf("Greeting: %s", r.GetMessage())     
+```
