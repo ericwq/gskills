@@ -9,7 +9,7 @@ Request → Request-Headers *Length-Prefixed-Message EOS.
 * the final part is ***EOS***(end of stream) is a flag, set in the last data frame.
 
 The following diagram is the invocation sequence. It foucus on the sending request: mainly ***Request-Headers*** and ***Length-Prefixed-Message***.
-![images.002.png](images/images.003.png)
+![images/images.003.png](images/images.003.png)
 
 ## Application code
 Here is the gRPC client application code snippet. It uses ```c := pb.NewGreeterClient(conn)``` to create the network connection and calls ```r, err := c.SayHello(ctx, &pb.HelloRequest{Name: name})``` to send the request over HTTP 2. Pretty simple, right?
