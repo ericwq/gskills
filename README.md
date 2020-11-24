@@ -5,11 +5,11 @@ My original goal is to understand the source code of [gRPC-go](https://github.co
 ## Content 
 
 ### [Sending Request](request.md)
-* [Application code](request.m#application-code)
-* [Client stub](request.m#client-stub)
-  * [Fork road](request.m#fork-road)
-  * [Sending Request-Headers](request.m#sending-request-headers)
-  * [Sending Length-Prefixed-Message and EOS](request.m#sending-length-prefixed-message-and-eos)
+* [Application code](request.md#application-code)
+* [Client stub](request.md#client-stub)
+  * [Fork road](request.md#fork-road)
+  * [Sending Request-Headers](request.md#sending-request-headers)
+  * [Sending Length-Prefixed-Message and EOS](request.md#sending-length-prefixed-message-and-eos)
 ### [Reply with Response](response.md)
 ### [Interceptor](interceptor.md)
 * [Interceptor chain execution flow](interceptor.md#interceptor-chain-execution-flow)   
