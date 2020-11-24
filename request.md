@@ -10,6 +10,7 @@ Request → Request-Headers *Length-Prefixed-Message EOS.
 
 The following diagram is the invocation sequence. It foucus on the sending request: mainly ***Request-Headers*** and ***Length-Prefixed-Message***.
 ![images.002.png](images/images.003.png)
+
 ## Application code
 Here is the gRPC client application code snippet. we use ```c := pb.NewGreeterClient(conn)``` to create the connection. and call ```r, err := c.SayHello(ctx, &pb.HelloRequest{Name: name})``` to send the request over HTTP 2.
 
@@ -35,7 +36,7 @@ Here is the gRPC client application code snippet. we use ```c := pb.NewGreeterCl
     }                               
     log.Printf("Greeting: %s", r.GetMessage())     
 ```
-## client stub
+## Client stub
 ```c.SayHello()``` is the gRPC client stub. The stub provide the ```"/helloworld.Greeter/SayHello"``` parameter and the ```in``` parameter. 
 
 please note the following specification for the method string argument( the canonical name of ```"/helloworld.Greeter/SayHello"```):
@@ -70,7 +71,7 @@ func (c *greeterClient) SayHello(ctx context.Context, in *HelloRequest, opts ...
    37     return invoke(ctx, method, args, reply, cc, opts...)             
    38 }                                                                              
 ```
-### fork road
+### Fork road
 ```invoke()``` create a client stream. It is the main fork road:
 * besides create the client stream, ```newClientStream``` will also process the ***Request-Headers***
 * ```cs.SendMsg(req)``` will process the ***Length-Prefixed-Message***, 
@@ -88,7 +89,7 @@ func invoke(ctx context.Context, method string, req, reply interface{}, cc *Clie
     return cs.RecvMsg(reply)      
 }      
 ```
-### Request-Headers
+### Sending Request-Headers
 ```newClientStream()``` create the ```clientStream```, retry the ```op``` function several times until success or error. 
 
 please note:
@@ -207,7 +208,7 @@ func (t *http2Client) NewStream(ctx context.Context, callHdr *CallHdr) (_ *Strea
     ...
 }
 ```
-### Length-Prefixed-Message and EOS
+### Sending Length-Prefixed-Message and EOS
 let's go back to the fork road and check the ```cs.SendMsg()```. Inside```cs.SendMsg()```, first we ```prepareMsg()``` encode/compress request data, Secondly, you see the ```op``` function and ```cs.withRetry()``` again. Here ```prepareMsg()``` will encode and compress (if required) the request object to byte slice.
 
 ```a.sendMsg()``` send the request data. ```csAttempt``` is an action can be retried several times untial failure or success. While ```cs.withRetry()``` is a mechanism to perform the "attempt action" with the predefined retry policy.
