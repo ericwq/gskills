@@ -36,7 +36,7 @@ Here is the gRPC client application code snippet. we use ```c := pb.NewGreeterCl
 ## client stub
 ```c.SayHello()``` is the gRPC client stub. The stub provide the ```"/helloworld.Greeter/SayHello"``` parameter and the ```in``` parameter. 
 
-please note the specification for the method string argument:
+please note the specification for the method string argument( the parameter name of ```"/helloworld.Greeter/SayHello"```):
 * Path → ":path" "/" Service-Name "/" {method name} 
 * Service-Name → {IDL-specific service name}
 
