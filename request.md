@@ -205,7 +205,7 @@ func (t *http2Client) NewStream(ctx context.Context, callHdr *CallHdr) (_ *Strea
     ...
 }
 ```
-```createHeaderFields()``` only show part of the code snippet. plase note the ```:path``` header field and ```:authority``` header field.
+We only show part of the code snippet of ```createHeaderFields()``` . In this case, the ```:path``` header field has value ```"/helloworld.Greeter/SayHello"```. Please also note the value of  ```:authority``` and ```content-type``` header field.
 ```go
 func (t *http2Client) createHeaderFields(ctx context.Context, callHdr *CallHdr) ([]hpack.HeaderField, error) {
 ...
