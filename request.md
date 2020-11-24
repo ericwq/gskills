@@ -149,9 +149,6 @@ func (a *csAttempt) newStream() error {
 ```
 ```a.t.NewStream()``` create the header frame and send it with ```t.controlBuf.executeAndPut()```.
 
-please note:
-* we didn't show the detail of ```t.createHeaderFields()```.
-
 ```go
 // NewStream creates a stream and registers it into the transport as "active"
 // streams.
@@ -207,6 +204,21 @@ func (t *http2Client) NewStream(ctx context.Context, callHdr *CallHdr) (_ *Strea
     }
     ...
 }
+```
+```createHeaderFields()``` only show part of the code snippet. plase note the ```:path``` header field and ```:authority``` header field.
+```go
+func (t *http2Client) createHeaderFields(ctx context.Context, callHdr *CallHdr) ([]hpack.HeaderField, error) {
+...
+    headerFields := make([]hpack.HeaderField, 0, hfLen)                                                                                                                      
+    headerFields = append(headerFields, hpack.HeaderField{Name: ":method", Value: "POST"})                                                                                        
+    headerFields = append(headerFields, hpack.HeaderField{Name: ":scheme", Value: t.scheme})                                                                               
+    headerFields = append(headerFields, hpack.HeaderField{Name: ":path", Value: callHdr.Method})                                                                                 
+    headerFields = append(headerFields, hpack.HeaderField{Name: ":authority", Value: callHdr.Host})                                                                
+    headerFields = append(headerFields, hpack.HeaderField{Name: "content-type", Value: grpcutil.ContentType(callHdr.ContentSubtype)})
+    headerFields = append(headerFields, hpack.HeaderField{Name: "user-agent", Value: t.userAgent})                                                                                    headerFields = append(headerFields, hpack.HeaderField{Name: "te", Value: "trailers"})
+...  
+}
+
 ```
 ### Sending Length-Prefixed-Message and EOS
 let's go back to the fork road and check the ```cs.SendMsg()```. Inside```cs.SendMsg()```, first we ```prepareMsg()``` encode/compress request data, Secondly, you see the ```op``` function and ```cs.withRetry()``` again. Here ```prepareMsg()``` will encode and compress (if required) the request object to byte slice.
