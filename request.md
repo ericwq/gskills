@@ -50,7 +50,7 @@ func (c *greeterClient) SayHello(ctx context.Context, in *HelloRequest, opts ...
     return out, nil
 }
 ```
-```Invoke()``` apply the ```CallOptions``` first. If there is any interceptor, use interceptor to perform the task, otherwise call the ```invoke()``` function.
+```Invoke()``` apply the ```CallOptions``` first. If there is any interceptor, use interceptor to perform the task, otherwise call the ```invoke()``` function directly.
 
 ```go
    25 // Invoke sends the RPC request on the wire and returns after response is                                                                              
@@ -69,10 +69,10 @@ func (c *greeterClient) SayHello(ctx context.Context, in *HelloRequest, opts ...
    38 }                                                                              
 ```
 ### fork road
-```invoke()``` create a client stream. Here is the main fork road:
-* besides create the client stream, ```newClientStream``` will also process the Request-Headers
-* ```cs.SendMsg(req)``` will process the Length-Prefixed-Message, 
-* EOS is just the flag set for the last data frame.
+```invoke()``` create a client stream. It is the main fork road:
+* besides create the client stream, ```newClientStream``` will also process the ***Request-Headers***
+* ```cs.SendMsg(req)``` will process the ***Length-Prefixed-Message***, 
+* ***EOS*** is just the flag in the last data frame.
 
 ```go
 func invoke(ctx context.Context, method string, req, reply interface{}, cc *ClientConn, opts ...CallOption) error {
