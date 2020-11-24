@@ -13,10 +13,12 @@ Response → (Response-Headers *Length-Prefixed-Message Trailers) / Trailers-Onl
 Please refer to the [Send Request](request.md) to get more information about the request. After all we need to know the request to give the correct reply.
 
 The following diagram is the invocation sequence. It focus on the reply the response: mainly ***Response-Headers***, ***Length-Prefixed-Message*** and ***Trailers***.
+
 ![images/images.004.png][images/images.004.png]
+
 ## Application code
 
-Here is the gRPC server side application code snippet. It uses ```net.Listen("tcp", port)``` to create the server side listening port. Then it create a server with ```grpc.NewServer() ``` and register the implementation of ```"helloworld.GreeterServer"``` gRPC service. At last, it ```s.Serve(lis)``` the listening port.
+Here is the gRPC server side application code snippet. It uses ```net.Listen("tcp", port)``` to create the server side listening port. Then it create a gRPC server with ```grpc.NewServer() ``` and register the implementation of ```"helloworld.GreeterServer"``` service on the gRPC server. At last, it uses ```s.Serve(lis)```to serve the the listening port.
 
 It's easy, right? Let's move on to see what happens under the hood.
 
