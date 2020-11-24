@@ -87,13 +87,29 @@ func invoke(ctx context.Context, method string, req, reply interface{}, cc *Clie
 }      
 ```
 ### Request-Headers
-```newClientStream``` will create the ```clientStream```, retry the ```op``` function several times until success or error. 
+```newClientStream()``` create the ```clientStream```, retry the ```op``` function several times until success or error. 
 
 please note:
 * ```op``` is a anonymous warpper for the ```a.newStream()```, where ```a``` is the ```csAttempt``` we just created with ```cs.newAttemptLocked()```
 
 ```go
 func newClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, method string, opts ...CallOption) (_ ClientStream, err error) {
+...
+    cs := &clientStream{  
+        callHdr:      callHdr,
+        ctx:          ctx,   
+        methodConfig: &mc,
+        opts:         opts,  
+        callInfo:     c,                                                                                                            
+        cc:           cc,                                                                                                           
+        desc:         desc,                                                                                                         
+        codec:        c.codec,                                                                                                      
+        cp:           cp,                                                                                                           
+        comp:         comp,                                                                                                         
+        cancel:       cancel,                                                                                                       
+        beginTime:    beginTime,
+        firstAttempt: true,                                                                                                         
+    }                                                                                                                              
 ...
     if err := cs.newAttemptLocked(sh, trInfo); err != nil {
         cs.finish(err)
@@ -108,7 +124,7 @@ func newClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, meth
 ...
 }
 ```
-```newStream()``` is will create the transport stream.
+```a.newStream()``` create the transport stream attempt. ```csAttempt``` is a action can be retried several times or success. While ```cs.withRetry()``` is a mechanism to perform the "attempt action" with the predefined retry policy.
 
 ```go
 func (a *csAttempt) newStream() error {       
@@ -128,3 +144,62 @@ func (a *csAttempt) newStream() error {
     return nil       
 } 
 ```
+```a.t.NewStream()``` create the ```headerFrame()``` and send the header frame with ```t.controlBuf.executeAndPut()```.
+
+```go
+// NewStream creates a stream and registers it into the transport as "active"
+// streams.
+func (t *http2Client) NewStream(ctx context.Context, callHdr *CallHdr) (_ *Stream, err error) {
+    ctx = peer.NewContext(ctx, t.getPeer())
+    headerFields, err := t.createHeaderFields(ctx, callHdr)
+    if err != nil {
+        // We may have performed I/O in the per-RPC creds callback, so do not
+        // allow transparent retry.
+        return nil, PerformedIOError{err}
+    }
+    s := t.newStream(ctx, callHdr)
+...
+    hdr := &headerFrame{
+        hf:        headerFields,
+        endStream: false,
+        initStream: func(id uint32) error {
+...
+        },
+        onOrphaned: cleanup,
+        wq:         s.wq,
+    }
+
+    for {
+        success, err := t.controlBuf.executeAndPut(func(it interface{}) bool {
+            if !checkForStreamQuota(it) {
+                return false
+            }
+            if !checkForHeaderListSize(it) {
+                return false
+            }
+            return true
+        }, hdr)
+        if err != nil {
+            return nil, err
+        }
+        if success {
+            break
+        }
+        if hdrListSizeErr != nil {
+            return nil, hdrListSizeErr
+        }
+        firstTry = false
+        select {
+        case <-ch:
+        case <-s.ctx.Done():
+            return nil, ContextErr(s.ctx.Err())
+        case <-t.goAway:
+            return nil, errStreamDrain
+        case <-t.ctx.Done():
+            return nil, ErrConnClosing
+        }
+    }
+    ...
+}
+```
+### Length-Prefixed-Message and EOS
