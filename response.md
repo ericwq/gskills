@@ -20,6 +20,8 @@ The following diagram is the invocation sequence. It focus on the reply the resp
 
 Here is the gRPC server side application code snippet. It uses ```net.Listen("tcp", port)``` to create the server side listening port. Then it create a gRPC server with ```grpc.NewServer() ``` and register the implementation of ```"helloworld.GreeterServer"``` service on the gRPC server. At last, it uses ```s.Serve(lis)```to serve the the listening port.
 
+Plase note that the ```server.SayHello()``` will be the destination of gRPC request. Let's continue our analysis from ```pb.RegisterGreeterServer()```.  
+
 It's easy, right? Let's move on to see what happens under the hood.
 
 ```go
@@ -50,4 +52,44 @@ func main() {
     }                                
 }                                
 ```
+## Register Service
+```go
+func RegisterGreeterServer(s grpc.ServiceRegistrar, srv GreeterServer) {                                
+    s.RegisterService(&_Greeter_serviceDesc, srv)                                
+}                                
+                                
+func _Greeter_SayHello_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error)       {                                                                
+    in := new(HelloRequest)                                
+    if err := dec(in); err != nil {                                
+        return nil, err                                
+    }                                
+    if interceptor == nil {                                
+        return srv.(GreeterServer).SayHello(ctx, in)                                
+    }                                
+    info := &grpc.UnaryServerInfo{                                
+        Server:     srv,                                
+        FullMethod: "/helloworld.Greeter/SayHello",                                
+    }                                
+    handler := func(ctx context.Context, req interface{}) (interface{}, error) {                                
+        return srv.(GreeterServer).SayHello(ctx, req.(*HelloRequest))                                
+    }                                
+    return interceptor(ctx, in, info, handler)                                
+}                                
+                                
+var _Greeter_serviceDesc = grpc.ServiceDesc{                                
+    ServiceName: "helloworld.Greeter",                                
+    HandlerType: (*GreeterServer)(nil),                                
+    Methods: []grpc.MethodDesc{                                
+        {                                
+            MethodName: "SayHello",                                
+            Handler:    _Greeter_SayHello_Handler,                                
+        },                                
+    },                                
+    Streams:  []grpc.StreamDesc{},                                
+    Metadata: "examples/helloworld/helloworld/helloworld.proto",                                
+}  
+```
 ## Server skeleton
+
+```go
+```
