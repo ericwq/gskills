@@ -102,7 +102,7 @@ Now the interceptor chain is ready . The execution flow is as following.
 4. continue the recursioin, until getChainUnaryHandler(2) return  finalHandler.
 5. after finalHandler is called, the postProcessing part of interceptor[2] start, then interceptor[2] finished
 6. control return to the interceptor[1] postProcessing part.
-7. continue the recursioin, until we interceptor[0] finished.
+7. continue the return, until the interceptor[0] finished.
 
 now we only have the interceptor chain, we need a entry point to launch this chain.   
 
