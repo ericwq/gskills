@@ -8,6 +8,7 @@ Request → Request-Headers *Length-Prefixed-Message EOS.
 * zero or more data Frame (Length-Prefixed-Message), 
 * the final part is EOS(end of stream) is a flag, set in the last data frame.
 
+![images.002.png](images/images.003.png)
 ## application code
 Here is the gRPC client application code snippet. we use ```c := pb.NewGreeterClient(conn)``` to create the connection. and call ```r, err := c.SayHello(ctx, &pb.HelloRequest{Name: name})``` to send the request over HTTP 2.
 
@@ -124,7 +125,7 @@ func newClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, meth
 ...
 }
 ```
-```a.newStream()``` create the transport stream attempt. ```csAttempt``` is a action can be retried several times or success. While ```cs.withRetry()``` is a mechanism to perform the "attempt action" with the predefined retry policy.
+```a.newStream()``` create the transport stream attempt. ```csAttempt``` is an action can be retried several times untial failure or success. While ```cs.withRetry()``` is a mechanism to perform the "attempt action" with the predefined retry policy.
 
 ```go
 func (a *csAttempt) newStream() error {       
@@ -144,7 +145,7 @@ func (a *csAttempt) newStream() error {
     return nil       
 } 
 ```
-```a.t.NewStream()``` create the header frame and send the it with ```t.controlBuf.executeAndPut()```.
+```a.t.NewStream()``` create the header frame and send it with ```t.controlBuf.executeAndPut()```.
 
 please note:
 * we didn't show the detail of ```t.createHeaderFields()```.
@@ -206,7 +207,13 @@ func (t *http2Client) NewStream(ctx context.Context, callHdr *CallHdr) (_ *Strea
 }
 ```
 ### Length-Prefixed-Message and EOS
-let's back to the fork road and check the ```cs.SendMsg()```. First we ```prepareMsg()```, Secondly, you got the ```op``` function and ```cs.withRetry()``` again. Here ```prepareMsg()``` will encode and compress (if required) the request object to ```hdr, payload, data []byte```.
+let's go back to the fork road and check the ```cs.SendMsg()```. Inside```cs.SendMsg()```, first we ```prepareMsg()``` encode/compress request data, Secondly, you see the ```op``` function and ```cs.withRetry()``` again. Here ```prepareMsg()``` will encode and compress (if required) the request object to byte slice.
+
+```a.sendMsg()``` send the request data. ```csAttempt``` is an action can be retried several times untial failure or success. While ```cs.withRetry()``` is a mechanism to perform the "attempt action" with the predefined retry policy.
+
+please note:
+* ```op``` is a anonymous warpper for the ```a.sendMsg()```, where ```a``` is the ```csAttempt``` early created.
+
 ```go
 func (cs *clientStream) SendMsg(m interface{}) (err error) {
     defer func() {
@@ -253,7 +260,7 @@ func (cs *clientStream) SendMsg(m interface{}) (err error) {
     return 
 }
 ```
-```a.sendMsg()``` invoke the ```a.t.Write()``` to send the data. note: ```Last``` is true for no-client-stream. that's our EOS flag.
+```a.sendMsg()``` invoke the ```a.t.Write()``` to send the data. note: ```Last``` is true for no-client-stream. that's our ***EOS*** flag. its value is true.
 ```go
 func (a *csAttempt) sendMsg(m interface{}, hdr, payld, data []byte) error {
     cs := a.cs                 
@@ -282,7 +289,7 @@ func (a *csAttempt) sendMsg(m interface{}, hdr, payld, data []byte) error {
     return nil       
 }       
 ```
-```a.t.Write()``` create the data frame and send it with ```t.controlBuf.put(df)```
+```a.t.Write()``` create the data frame and send it with ```t.controlBuf.put(df)```. Now, the Length-Prefixed-Message and EOS has been send out.
 
 ```go
 // Write formats the data into HTTP2 data frame(s) and sends it out. The caller
