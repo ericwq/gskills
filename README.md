@@ -4,7 +4,7 @@ My original goal is to understand the source code of [gRPC-go](https://github.co
 
 ## Content 
 
-### [Sending Request](request.md)
+### [Send Request](request.md)
 * [Application code](request.md#application-code)
 * [Client stub](request.md#client-stub)
   * [Fork road](request.md#fork-road)
