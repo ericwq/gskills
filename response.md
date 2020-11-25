@@ -223,22 +223,22 @@ func (s *Server) Serve(lis net.Listener) error {
 ```
 
 ### Prepare connection
-```handleRawConn()``` will call ```s.useTransportAuthenticator```
+```handleRawConn()``` will call ```s.useTransportAuthenticator``` first. (I still need some time to understand this part.)
 
-```s.newHTTP2Transport()``` perform the following work.
-* Send the server side SETTING frame.
-* Adjust the connection flow control window if needed.
-* Create the controlBuffer ```t.controlBuf```. For now, just remember controlBuffer is a way to pass information to loopy. We will talk about it in separate chapter.
-* Check and validate the (HTTP 2) connection preface magic string.
-* Receive and process client SETTING frame
-* Create the ```loopyWriter```. For now, just remember ```loopyWriter``` works closely with ```t.controlBuf``` to process HTTP 2 frame. We will talk about it in separate chapter.
-* Launch a new goroutine to manage the connection state (close idle connection, keep alive active connection, etc. )
+Then it will call ```s.newHTTP2Transport()```, this function will do the following thing.
+* send the server side SETTING frame to the client.
+* adjust the connection flow control window if needed.
+* create the controlBuffer ```t.controlBuf```. For now, just remember controlBuffer is a way to pass information to loopy. We will talk about it in separate chapter.
+* check and validate the (HTTP 2) connection preface magic string.
+* receive and process client SETTING frame
+* create the ```loopyWriter``` and run it in a new goroutine. For now, just remember ```loopyWriter``` works closely with ```t.controlBuf``` to process HTTP 2 frame. We will talk about it in separate chapter.
+* launch a new ```t.keepalive()``` goroutine to manage the connection state (e.g. close idle connection, keep alive active connection, etc. )
 
-Those who are familar with HTTP 2 protocol will find the above work is necessary before accepting the client request. We will NOT show the code. Showing that code will complicate and disturb our focus. 
+Those who are familar with HTTP 2 protocol will find the above work is necessary before accepting the client request. We will NOT show ```s.newHTTP2Transport()``` related code. Showing that code will complicate and disturb our focus. 
 
-In other words, the first part of ```handleRawConn()``` is prepare the connection for stream process.
+In short , the ```s.newHTTP2Transport()``` will prepare the connection for next stream process.
 
-The second part is to process the stream on the created connection.  ```s.serveStreams()``` will process streams in a separate goroutine. 
+The last part is processing the stream on the created connection.  ```s.serveStreams()``` will process streams in a separate goroutine. 
 ```go
 // handleRawConn forks a goroutine to handle a just-accepted connection that
 // has not had any I/O performed on it yet.
@@ -281,9 +281,85 @@ func (s *Server) handleRawConn(rawConn net.Conn) {
 ```
 ### Serve stream
 
-```go
-```
-### Handle stream
+```serveStreams()``` call ```st.HandleStreams()``` and provide a anonymous function (handle) for it. 
+[TODO] add some content about goroutine.
 
 ```go
+func (s *Server) serveStreams(st transport.ServerTransport) {
+    defer st.Close()
+    var wg sync.WaitGroup                                                                                                                                        
+                                                                                                                                                  
+    var roundRobinCounter uint32                                                                                                                        
+    st.HandleStreams(func(stream *transport.Stream) {                                                                                              
+        wg.Add(1)                                                                                                          
+        if s.opts.numServerWorkers > 0 {                                                                                   
+            data := &serverWorkerData{st: st, wg: &wg, stream: stream}                                                     
+            select {                                                                                                       
+            case s.serverWorkerChannels[atomic.AddUint32(&roundRobinCounter, 1)%s.opts.numServerWorkers] <- data:          
+            default:                                                                                                       
+                // If all stream workers are busy, fallback to the default code path.                                      
+                go func() {                                                                                                
+                    s.handleStream(st, stream, s.traceInfo(st, stream))                                                    
+                    wg.Done()                                                                                                                        
+                }()                                                                                                        
+            }                                                                                                              
+        } else {                                                                                                                                       
+            go func() {                                                                                                    
+                defer wg.Done()                                                                                                         
+                s.handleStream(st, stream, s.traceInfo(st, stream))                                                                               
+            }()                                                                                                                                                  
+        }                                                                                                                                                
+    }, func(ctx context.Context, method string) context.Context {                                                                                               
+        if !EnableTracing {                                                                                                                           
+            return ctx                                                                                                                                
+        }
+        tr := trace.New("grpc.Recv."+methodFamily(method), method)
+        return trace.NewContext(ctx, tr)
+    })
+    wg.Wait()
+}
+
+```
+
+```go
+// HandleStreams receives incoming streams using the given handler. This is
+// typically run in a separate goroutine.
+// traceCtx attaches trace to ctx and returns the new context.
+func (t *http2Server) HandleStreams(handle func(*Stream), traceCtx func(context.Context, string) context.Context) {
+    defer close(t.readerDone)
+    for {
+        t.controlBuf.throttle()
+        frame, err := t.framer.fr.ReadFrame()
+        atomic.StoreInt64(&t.lastRead, time.Now().UnixNano())
+        if err != nil {                               
++-- 26 lines: if se, ok := err.(http2.StreamError); ok {············································································································
+            t.Close()                  
+            return                                                                                               
+        }                  
+        switch frame := frame.(type) {                      
+        case *http2.MetaHeadersFrame:            
+            if t.operateHeaders(frame, handle, traceCtx) {
+                t.Close()                                 
+                break                                     
+            }                                                                                        
+        case *http2.DataFrame:                      
+            t.handleData(frame)               
+        case *http2.RSTStreamFrame:       
+            t.handleRSTStream(frame)        
+        case *http2.SettingsFrame:          
+            t.handleSettings(frame)  
+        case *http2.PingFrame:                            
+            t.handlePing(frame)
+        case *http2.WindowUpdateFrame:                      
+            t.handleWindowUpdate(frame)                     
+        case *http2.GoAwayFrame:
+            // TODO: Handle GoAway from the client appropriately.
+        default:                   
+            if logger.V(logLevel) {                                                                  
+                logger.Errorf("transport: http2Server.HandleStreams found unhandled frame type %v.", frame)
+            }                      
+        }                     
+    }                          
+}                                     
+
 ```
