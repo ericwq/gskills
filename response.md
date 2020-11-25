@@ -185,7 +185,7 @@ The following diagram is the serve request sequence. It focus on the reply the r
 
 ![images.004.png](images/images.004.png)
 
-Now everything is ready. let's serve the gRPC request. ```Serve(``` need to be called from your application code. It will be the main goroutine to serve request. 
+Now everything is ready. Let's serve the gRPC request. ```Serve(``` need to be called from your application code. It will be the main goroutine to serve request. 
 
 Its job is:
 * wait and accep the incoming connection and 
@@ -222,9 +222,62 @@ func (s *Server) Serve(lis net.Listener) error {
 }                                                
 ```
 
-### Accept connection
+### Prepare connection
+```handleRawConn()``` will call ```s.useTransportAuthenticator```
 
+```s.newHTTP2Transport()``` perform the following work.
+* Send the server side SETTING frame.
+* Adjust the connection flow control window if needed.
+* Create the controlBuffer ```t.controlBuf```. For now, just remember controlBuffer is a way to pass information to loopy. We will talk about it in separate chapter.
+* Check and validate the (HTTP 2) connection preface magic string.
+* Receive and process client SETTING frame
+* Create the ```loopyWriter```. For now, just remember ```loopyWriter``` works closely with ```t.controlBuf``` to process HTTP 2 frame. We will talk about it in separate chapter.
+* Launch a new goroutine to manage the connection state (close idle connection, keep alive active connection, etc. )
+
+Those who are familar with HTTP 2 protocol will find the above work is necessary before accepting the client request. We will NOT show the code. Showing that code will complicate and disturb our focus. 
+
+In other words, the first part of ```handleRawConn()``` is prepare the connection for stream process.
+
+The second part is to process the stream on the created connection.  ```s.serveStreams()``` will process streams in a separate goroutine. 
 ```go
+// handleRawConn forks a goroutine to handle a just-accepted connection that
+// has not had any I/O performed on it yet.
+func (s *Server) handleRawConn(rawConn net.Conn) {
+    if s.quit.HasFired() {
+        rawConn.Close()
+        return
+    }
+    rawConn.SetDeadline(time.Now().Add(s.opts.connectionTimeout))
+    conn, authInfo, err := s.useTransportAuthenticator(rawConn)
+    if err != nil {
+        // ErrConnDispatched means that the connection was dispatched away from
+        // gRPC; those connections should be left open.
+        if err != credentials.ErrConnDispatched {
+            s.mu.Lock()
+            s.errorf("ServerHandshake(%q) failed: %v", rawConn.RemoteAddr(), err)
+            s.mu.Unlock()
+            channelz.Warningf(logger, s.channelzID, "grpc: Server.Serve failed to complete security handshake from %q: %v", rawConn.RemoteAddr(), err)
+            rawConn.Close()
+        }
+        rawConn.SetDeadline(time.Time{})
+        return
+    }
+ 
+    // Finish handshaking (HTTP2)
+    st := s.newHTTP2Transport(conn, authInfo)
+    if st == nil {
+        return
+    }
+ 
+    rawConn.SetDeadline(time.Time{})
+    if !s.addConn(st) {
+        return
+    }
+    go func() {
+        s.serveStreams(st)
+        s.removeConn(st)
+    }()
+}
 ```
 ### Serve stream
 
