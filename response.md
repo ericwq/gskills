@@ -14,7 +14,7 @@ Please refer to the [Send Request](request.md) to get more information about the
 
 The following diagram is the invocation sequence. It focus on the reply the response: mainly ***Response-Headers***, ***Length-Prefixed-Message*** and ***Trailers***.
 
-![images/images.004.png][images/images.004.png]
+![images.004.png](images/images.004.png)
 
 ## Application code
 
