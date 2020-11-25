@@ -11,6 +11,12 @@ My original goal is to understand the source code of [gRPC-go](https://github.co
   * [Sending Request-Headers](request.md#sending-request-headers)
   * [Sending Length-Prefixed-Message and EOS](request.md#sending-length-prefixed-message-and-eos)
 ### [Reply with Response](response.md)
+* Application code
+* Register Service
+* Serve request                                
+  * Accept connection                                
+  * Serve stream                                
+  * Handle stream           
 ### [Interceptor](interceptor.md)
 * [Interceptor chain execution flow](interceptor.md#interceptor-chain-execution-flow)   
 * [Launch Intercetor](interceptor.md#launch-interceptor)  
