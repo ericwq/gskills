@@ -427,3 +427,81 @@ func (fr *Framer) ReadFrame() (Frame, error) {
     return f, nil
 }      
 ```
+
+```operateHeaders``` create the stream from the ```MetaHeadersFrame```. Then it check the stream to make sure it's validity. The most important step is to call ```handle(s)``` which is the wrapper function for ```s.handleStream()```. ***TODO figure out the numServerWorkers*** 
+
+In the following code snippet, some part is hided to avoid distraction.
+```
+func(stream *transport.Stream) {                                                                                              
+    wg.Add(1)                                                                                                          
+    if s.opts.numServerWorkers > 0 {                                                                                   
+        data := &serverWorkerData{st: st, wg: &wg, stream: stream}                                                     
+        select {                                                                                                       
+        case s.serverWorkerChannels[atomic.AddUint32(&roundRobinCounter, 1)%s.opts.numServerWorkers] <- data:          
+        default:                                                                                                       
+            // If all stream workers are busy, fallback to the default code path.                                      
+            go func() {                                                                                                
+                s.handleStream(st, stream, s.traceInfo(st, stream))                                                    
+                wg.Done()                                                                                                                        
+            }()                                                                                                        
+        }                                                                                                              
+    } else {                                                                                                                                       
+        go func() {                                                                                                    
+            defer wg.Done()                                                                                                         
+            s.handleStream(st, stream, s.traceInfo(st, stream))                                                                               
+        }()                                                                                                                                                  
+    }
+}
+
+// operateHeader takes action on the decoded headers.                                                                                                
+func (t *http2Server) operateHeaders(frame *http2.MetaHeadersFrame, handle func(*Stream), traceCtx func(context.Context, string) context.Context) (fatal bool) {
+    streamID := frame.Header().StreamID
+    state := &decodeState{                                                                                                                               
+        serverSide: true,                                                                                                                                   
+    }
+    if h2code, err := state.decodeHeader(frame); err != nil {                                                                                                    
+        if _, ok := status.FromError(err); ok {                                                                                                                 
+            t.controlBuf.put(&cleanupStream{                                                                                                                   
+                streamID: streamID,
+                rst:      true,
+                rstCode:  h2code,
+                onWrite:  func() {},                                                                                                                             
+            })
+        }
+        return false
+    }
+    
+    buf := newRecvBuffer()                                                                                                                                
+    s := &Stream{
+        id:             streamID,                                                                                                                             
+        st:             t,                                                                                                                                    
+        buf:            buf,
+        fc:             &inFlow{limit: uint32(t.initialWindowSize)},
+        recvCompress:   state.data.encoding,
+        method:         state.data.method,                                                                                                  
+        contentSubtype: state.data.contentSubtype,
+    }
+    ...
+    if frame.StreamEnded() {                                                                                                                          
+        // s is just created by the caller. No lock needed.                                                                                                
+        s.state = streamReadDone                                                                                                                                 
+    }
+    if streamID%2 != 1 || streamID <= t.maxStreamID {
+        t.mu.Unlock()
+        // illegal gRPC stream id.
+        if logger.V(logLevel) {
+            logger.Errorf("transport: http2Server.HandleStreams received an illegal stream id: %v", streamID)
+        }
+        s.cancel()
+        return true
+    }
+    ...
+    // Register the stream with loopy.
+    t.controlBuf.put(&registerStream{
+        streamID: s.id,
+        wq:       s.wq,
+    })
+    handle(s)
+    return false
+}
+```
