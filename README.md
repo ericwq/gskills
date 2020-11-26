@@ -16,7 +16,7 @@ My original goal is to understand the source code of [gRPC-go](https://github.co
 * [Serve request](response.md#serve-request)                                
   * [Prepare for stream](response.md#prepare-for-stream)
   * [Serve stream](response.md#serve-stream) 
-  * [Handle stream](response.md#handle-stream)
+  * [Handle request](response.md#handle-request)
 ## [Request parameters](parameters.md)
 ## controlBuffer and loopy
 ## Authentication

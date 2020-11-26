@@ -427,8 +427,9 @@ func (fr *Framer) ReadFrame() (Frame, error) {
     return f, nil
 }      
 ```
+```operateHeaders``` create the stream from the ```MetaHeadersFrame```. Then it check the stream to make sure it's validity. The most important step is to call ```handle(s)``` which is the wrapper function for ```s.handleStream()```. 
 
-```operateHeaders``` create the stream from the ```MetaHeadersFrame```. Then it check the stream to make sure it's validity. The most important step is to call ```handle(s)``` which is the wrapper function for ```s.handleStream()```. ***TODO figure out the numServerWorkers*** 
+***TODO figure out the numServerWorkers*** 
 
 In the following code snippet, some part is hided to avoid distraction.
 ```
@@ -505,3 +506,4 @@ func (t *http2Server) operateHeaders(frame *http2.MetaHeadersFrame, handle func(
     return false
 }
 ```
+### Handle request
