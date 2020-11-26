@@ -17,9 +17,9 @@ My original goal is to understand the source code of [gRPC-go](https://github.co
   * [Prepare for stream](response.md#prepare-for-stream)
   * [Serve stream](response.md#serve-stream) 
   * [Handle request](response.md#handle-request)
-## [Request parameters](parameters.md)
-## controlBuffer and loopy
-## Authentication
+### [Request parameters](parameters.md)
+### controlBuffer and loopy
+### Authentication
 ### [Interceptor](interceptor.md)
 * [Interceptor chain execution flow](interceptor.md#interceptor-chain-execution-flow)   
 * [Launch Intercetor](interceptor.md#launch-interceptor)  
