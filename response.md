@@ -281,8 +281,7 @@ func (s *Server) handleRawConn(rawConn net.Conn) {
 ```
 ### Serve stream
 
-```serveStreams()``` call ```st.HandleStreams()``` and provide a anonymous function (handle) for it. 
-[TODO] add some content about goroutine.
+```serveStreams()``` call the ```st.HandleStreams()``` and provide a anonymous function as parapmeter, which is a wrapper for ```s.handleStream```. ```serveStreams()``` run in its goroutine and can handle different streams. For each stream the wrapper will process it. Inside the wrapper, ```s.handleStream()```` also run in a separate goroutine. 
 
 ```go
 func (s *Server) serveStreams(st transport.ServerTransport) {
@@ -320,7 +319,22 @@ func (s *Server) serveStreams(st transport.ServerTransport) {
 }
 
 ```
+```HandleStreams()``` will read a frame.  Actually ```ReadFrame()``` can read all kinds of frame. It do the following work: 
+* read frame header 
+* read frame payload data 
+* parse the paylod data to build different frame
+* check frame order to find invalid frame, and mostly check whether HEADERS and CONTINUATION frames are contiguous.
+* read 0 or more CONTINUATION frames and merge them into MetaHeadersFrame.
 
+if ```ReadFrame()``` return a MetaHeadersFrame, then ***Request-Headers*** is received by the server.
+
+After ```ReadFrame()``` ```HandleStreams()``` will process the frame according to the frame type. Most frames will be processed here. Such as PingFrame, WindowUpdateFrame, GoAwayFrame, SettingsFrame, even RSTStreamFrame in some case. 
+
+```MetaHeadersFrame``` is a special Frame. There is no such a frame in HTTP 2 protocol. For gRPC method call, process one HEADER frame plus zero or more CONTINUATION frames and some DATA frames will not be easy. By this design, ```MetaHeadersFrame``` contains all the method call information except method call parameter. it's time to process the method call request. 
+
+while ```DataFrame``` in here, TODO two goroutine read the same conneciton problem?
+
+In the following code snippet, the error processing part is folded to avoid distraction.
 ```go
 // HandleStreams receives incoming streams using the given handler. This is
 // typically run in a separate goroutine.
@@ -349,10 +363,7 @@ func (t *http2Server) HandleStreams(handle func(*Stream), traceCtx func(context.
         case *http2.SettingsFrame:          
             t.handleSettings(frame)  
         case *http2.PingFrame:                            
-            t.handlePing(frame)
-        case *http2.WindowUpdateFrame:                      
-            t.handleWindowUpdate(frame)                     
-        case *http2.GoAwayFrame:
+            t.handlePing(frame) case *http2.WindowUpdateFrame:                      t.handleWindowUpdate(frame)                     case *http2.GoAwayFrame:
             // TODO: Handle GoAway from the client appropriately.
         default:                   
             if logger.V(logLevel) {                                                                  
@@ -362,4 +373,45 @@ func (t *http2Server) HandleStreams(handle func(*Stream), traceCtx func(context.
     }                          
 }                                     
 
+// ReadFrame reads a single frame. The returned Frame is only valid
+// until the next call to ReadFrame.
+//
+// If the frame is larger than previously set with SetMaxReadFrameSize, the
+// returned error is ErrFrameTooLarge. Other errors may be of type
+// ConnectionError, StreamError, or anything else from the underlying
+// reader.
+func (fr *Framer) ReadFrame() (Frame, error) {
+    fr.errDetail = nil
+    if fr.lastFrame != nil {
+        fr.lastFrame.invalidate()
+    }
+    fh, err := readFrameHeader(fr.headerBuf[:], fr.r)
+    if err != nil {    
+        return nil, err
+    }
+    if fh.Length > fr.maxReadSize {
+        return nil, ErrFrameTooLarge
+    }                           
+    payload := fr.getReadBuf(fh.Length)              
+    if _, err := io.ReadFull(fr.r, payload); err != nil {
+        return nil, err
+    }
+    f, err := typeFrameParser(fh.Type)(fr.frameCache, fh, payload)
+    if err != nil {                         
+        if ce, ok := err.(connError); ok {
+            return nil, fr.connError(ce.Code, ce.Reason)
+        }                                                
+        return nil, err
+    }                                                        
+    if err := fr.checkFrameOrder(f); err != nil {                 
+        return nil, err
+    }                                     
+    if fr.logReads {                                    
+        fr.debugReadLoggerf("http2: Framer %p: read %v", fr, summarizeFrame(f))
+    }
+    if fh.Type == FrameHeaders && fr.ReadMetaHeaders != nil {
+        return fr.readMetaFrame(f.(*HeadersFrame))                            
+    }                        
+    return f, nil
+}      
 ```
