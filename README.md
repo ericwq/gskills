@@ -11,12 +11,13 @@ My original goal is to understand the source code of [gRPC-go](https://github.co
   * [Sending Request-Headers](request.md#sending-request-headers)
   * [Sending Length-Prefixed-Message and EOS](request.md#sending-length-prefixed-message-and-eos)
 ### [Reply with Response](response.md)
-* Application code
-* Register Service
-* Serve request                                
-  * Prepare connection                                
-  * Serve stream                                
-  * Handle stream           
+* [Application code](response.md#application-code)
+* [Register service](response.md#register-service)
+* [Serve request](response.md#serve-request)                                
+  * [Prepare for stream](response.md#prepare-for-stream)
+  * [Serve stream](response.md#serve-stream) 
+  * [Handle stream](response.md#handle-stream)
+## [Request parameters](parameters.md)
 ## controlBuffer and loopy
 ## Authentication
 ### [Interceptor](interceptor.md)
