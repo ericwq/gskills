@@ -432,7 +432,7 @@ func (fr *Framer) ReadFrame() (Frame, error) {
 ***TODO figure out the numServerWorkers*** 
 
 In the following code snippet, some part is hided to avoid distraction.
-```
+```go
 func(stream *transport.Stream) {                                                                                              
     wg.Add(1)                                                                                                          
     if s.opts.numServerWorkers > 0 {                                                                                   
