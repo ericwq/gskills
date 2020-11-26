@@ -281,7 +281,7 @@ func (s *Server) handleRawConn(rawConn net.Conn) {
 ```
 ### Serve stream
 
-```serveStreams()``` call the ```st.HandleStreams()``` and provide a anonymous function as parapmeter, which is a wrapper for ```s.handleStream```. ```serveStreams()``` run in its goroutine and can handle different streams. For each stream the wrapper will process it. Inside the wrapper, ```s.handleStream()```` also run in a separate goroutine. 
+```serveStreams()``` call the ```st.HandleStreams()``` and provide a anonymous function as parapmeter, which is a wrapper for ```s.handleStream()```. ```serveStreams()``` run in its goroutine and can handle different streams. Inside the wrapper, ```s.handleStream()```` also run in a separate goroutine. please note ```st.HandleStreams()``` and ```s.handleStream()``` are different function with similar function name. Their function signagure is different. 
 
 ```go
 func (s *Server) serveStreams(st transport.ServerTransport) {
@@ -319,7 +319,9 @@ func (s *Server) serveStreams(st transport.ServerTransport) {
 }
 
 ```
-```HandleStreams()``` will read a frame.  Actually ```ReadFrame()``` can read all kinds of frame. It do the following work: 
+```HandleStreams()``` read a frame by ```ReadFrame()``` and process it according to the different frame type.  
+
+Actually ```ReadFrame()``` can read all kinds of frame. It do the following work: 
 * read frame header 
 * read frame payload data 
 * parse the paylod data to build different frame
@@ -328,51 +330,7 @@ func (s *Server) serveStreams(st transport.ServerTransport) {
 
 if ```ReadFrame()``` return a MetaHeadersFrame, then ***Request-Headers*** is received by the server.
 
-After ```ReadFrame()``` ```HandleStreams()``` will process the frame according to the frame type. Most frames will be processed here. Such as PingFrame, WindowUpdateFrame, GoAwayFrame, SettingsFrame, even RSTStreamFrame in some case. 
-
-```MetaHeadersFrame``` is a special Frame. There is no such a frame in HTTP 2 protocol. For gRPC method call, process one HEADER frame plus zero or more CONTINUATION frames and some DATA frames will not be easy. By this design, ```MetaHeadersFrame``` contains all the method call information except method call parameter. it's time to process the method call request. 
-
-while ```DataFrame``` in here, TODO two goroutine read the same conneciton problem?
-
-In the following code snippet, the error processing part is folded to avoid distraction.
 ```go
-// HandleStreams receives incoming streams using the given handler. This is
-// typically run in a separate goroutine.
-// traceCtx attaches trace to ctx and returns the new context.
-func (t *http2Server) HandleStreams(handle func(*Stream), traceCtx func(context.Context, string) context.Context) {
-    defer close(t.readerDone)
-    for {
-        t.controlBuf.throttle()
-        frame, err := t.framer.fr.ReadFrame()
-        atomic.StoreInt64(&t.lastRead, time.Now().UnixNano())
-        if err != nil {                               
-+-- 26 lines: if se, ok := err.(http2.StreamError); ok {············································································································
-            t.Close()                  
-            return                                                                                               
-        }                  
-        switch frame := frame.(type) {                      
-        case *http2.MetaHeadersFrame:            
-            if t.operateHeaders(frame, handle, traceCtx) {
-                t.Close()                                 
-                break                                     
-            }                                                                                        
-        case *http2.DataFrame:                      
-            t.handleData(frame)               
-        case *http2.RSTStreamFrame:       
-            t.handleRSTStream(frame)        
-        case *http2.SettingsFrame:          
-            t.handleSettings(frame)  
-        case *http2.PingFrame:                            
-            t.handlePing(frame) case *http2.WindowUpdateFrame:                      t.handleWindowUpdate(frame)                     case *http2.GoAwayFrame:
-            // TODO: Handle GoAway from the client appropriately.
-        default:                   
-            if logger.V(logLevel) {                                                                  
-                logger.Errorf("transport: http2Server.HandleStreams found unhandled frame type %v.", frame)
-            }                      
-        }                     
-    }                          
-}                                     
-
 // ReadFrame reads a single frame. The returned Frame is only valid
 // until the next call to ReadFrame.
 //
@@ -414,4 +372,49 @@ func (fr *Framer) ReadFrame() (Frame, error) {
     }                        
     return f, nil
 }      
+```
+After ```ReadFrame()``` ```HandleStreams()``` will process the frame according to the frame type. Most frames will be processed here. Such as PingFrame, WindowUpdateFrame, GoAwayFrame, SettingsFrame, even RSTStreamFrame in some case. 
+
+```MetaHeadersFrame``` is a special Frame. There is no such a frame in HTTP 2 protocol. For gRPC method call, process one HEADER frame plus zero or more CONTINUATION frames and some DATA frames will not be easy. By this design, ```MetaHeadersFrame``` contains all the method call information except method call parameter. it's time to process the method call request. 
+
+while ```DataFrame``` in here, TODO two goroutine read the same conneciton problem?
+
+In the following code snippet, the error processing part is folded to avoid distraction.
+```go
+// HandleStreams receives incoming streams using the given handler. This is
+// typically run in a separate goroutine.
+// traceCtx attaches trace to ctx and returns the new context.
+func (t *http2Server) HandleStreams(handle func(*Stream), traceCtx func(context.Context, string) context.Context) {
+    defer close(t.readerDone)
+    for {
+        t.controlBuf.throttle()
+        frame, err := t.framer.fr.ReadFrame()
+        atomic.StoreInt64(&t.lastRead, time.Now().UnixNano())
+        if err != nil {                               
++-- 26 lines: if se, ok := err.(http2.StreamError); ok {············································································································
+            t.Close()                  
+            return                                                                                               
+        }                  
+        switch frame := frame.(type) {                      
+        case *http2.MetaHeadersFrame:            
+            if t.operateHeaders(frame, handle, traceCtx) {
+                t.Close()                                 
+                break                                     
+            }                                                                                        
+        case *http2.DataFrame:                      
+            t.handleData(frame)               
+        case *http2.RSTStreamFrame:       
+            t.handleRSTStream(frame)        
+        case *http2.SettingsFrame:          
+            t.handleSettings(frame)  
+        case *http2.PingFrame:                            
+            t.handlePing(frame) case *http2.WindowUpdateFrame:                      t.handleWindowUpdate(frame)                     case *http2.GoAwayFrame:
+            // TODO: Handle GoAway from the client appropriately.
+        default:                   
+            if logger.V(logLevel) {                                                                  
+                logger.Errorf("transport: http2Server.HandleStreams found unhandled frame type %v.", frame)
+            }                      
+        } 
+    } 
+} 
 ```
