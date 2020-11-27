@@ -725,7 +725,7 @@ func (s *Server) handleStream(t transport.ServerTransport, stream *transport.Str
 * call ```s.sendResponse()``` to send the response to client. Here the ***Response-Headers*** and ***Length-Prefixed-Message*** will be sent.
 * call ``t.WriteStatus()``` to send the trailer to end the stream. Here the ***Trailers*** will be sent.
 
-Now you understand the whole picture, let's dive into it one by one.
+Now we know the whole picture, let's dive each part one by one.
 
 In the following code snippet, some code is folded to avoid distraction.
 ```go
@@ -803,5 +803,54 @@ func (s *Server) processUnaryRPC(t transport.ServerTransport, stream *transport.
         })
     }
     return err
+}
+```
+```recvAndDecompress()``` call ```p.recvMsg()``` to read the data frame. It's more complex than you can expect. For now, let's assume ```p.recvMsg()``` get the payload of gRPC reqeust data frame. See [Request parameter](parameters.md) for detail.
+
+Then check the payload to find some kind of compression error. if there is no error and compressed, decompress the payload according to the [gRPC over HTTP2](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md)
+```
+The repeated sequence of Length-Prefixed-Message items is delivered in DATA frames
+* Length-Prefixed-Message → Compressed-Flag Message-Length Message
+* Compressed-Flag → 0 / 1 # encoded as 1 byte unsigned integer
+* Message-Length → {length of Message} # encoded as 4 byte unsigned integer (big endian)
+* Message → *{binary octet}
+```
+
+```go
+func recvAndDecompress(p *parser, s *transport.Stream, dc Decompressor, maxReceiveMessageSize int, payInfo *payloadInfo, compressor encoding.Compressor) ([]byte, er  ror) {                                                                                                                                       
+    pf, d, err := p.recvMsg(maxReceiveMessageSize)  
+    if err != nil {                                                                                                                               
+        return nil, err
+    }                                                                          
+    if payInfo != nil {              
+        payInfo.wireLength = len(d)                               
+    }                                                              
+                                                                 
+    if st := checkRecvPayload(pf, s.RecvCompress(), compressor != nil || dc != nil); st != nil {
+        return nil, st.Err()                              
+    }                                 
+        
+    var size int       
+    if pf == compressionMade {        
+        // To match legacy behavior, if the decompressor is set by WithDecompressor or RPCDecompressor,
+        // use this decompressor as the default.                                                                                                  
+        if dc != nil {                                                   
+            d, err = dc.Do(bytes.NewReader(d))                                 
+            size = len(d)                                  
+        } else {                                                        
+            d, size, err = decompress(compressor, d, maxReceiveMessageSize)
+        }
+        if err != nil {
+            return nil, status.Errorf(codes.Internal, "grpc: failed to decompress the received message %v", err)
+        }
+    } else {
+        size = len(d)
+    }
+    if size > maxReceiveMessageSize {
+        // TODO: Revisit the error code. Currently keep it consistent with java
+        // implementation.
+        return nil, status.Errorf(codes.ResourceExhausted, "grpc: received message larger than max (%d vs. %d)", size, maxReceiveMessageSize)
+    }
+    return d, nil
 }
 ```
