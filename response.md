@@ -805,7 +805,7 @@ func (s *Server) processUnaryRPC(t transport.ServerTransport, stream *transport.
     return err
 }
 ```
-```recvAndDecompress()``` call ```p.recvMsg()``` to read the data frame. It's more complex than you can expect. For now, let's assume ```p.recvMsg()``` get the payload of gRPC reqeust data frame. See [Request parameter](parameters.md) for detail.
+```recvAndDecompress()``` call ```p.recvMsg()``` to read the data frame. It's more complex than you can expect. For now, let's assume ```p.recvMsg()``` get the payload of gRPC reqeust. See [Request parameter](parameters.md) for detail. After ```p.recvMsg()``` return, ***Length-Prefixed-Message*** (gRPC request) has been read.
 
 Then check the payload to find some kind of compression error. if there is no error and compressed, decompress the payload according to the [gRPC over HTTP2](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md)
 ```
@@ -815,6 +815,7 @@ The repeated sequence of Length-Prefixed-Message items is delivered in DATA fram
 * Message-Length → {length of Message} # encoded as 4 byte unsigned integer (big endian)
 * Message → *{binary octet}
 ```
+Finally return the decompressed payload byte slice.
 
 ```go
 func recvAndDecompress(p *parser, s *transport.Stream, dc Decompressor, maxReceiveMessageSize int, payInfo *payloadInfo, compressor encoding.Compressor) ([]byte, er  ror) {                                                                                                                                       
