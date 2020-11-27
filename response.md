@@ -512,9 +512,9 @@ Let's spend some time to understand the server worker mechanism.
 
 ```s.opts.numServerWorkers``` can be set by ```NumStreamWorkers()```. If ```s.opts.numServerWorkers``` is set, ```s.initServerWorkers()``` will be called during ```NewServer``` process. Inside ```s.initServerWorkers()```, several ```s.serverWorker()``` goroutine will be started. ```s.serverWorkerChannels[i]``` is the communication channel. 
 
-```s.serverWorker()``` goroutine blocks on the ```ch chan *serverWorkerData``` channel and wait for the data to be fed by ```serveStreams```. When the for loop runs ```threshold``` times, it will reset the ```s.serverWorker()``` goroutine. The purpose is reset its stack so that large stacks don't live in memory forever. 
+```s.serverWorker()``` goroutine blocks on the ```ch chan *serverWorkerData``` channel and wait for the data to be fed by ```serveStreams```. When the for loop runs ```threshold``` times, it will reset the ```s.serverWorker()``` goroutine. The purpose is to reset its stack so that large stacks don't live in memory forever. 
 
-Either invoke ```s.handleStream()``` directly or invoke ```s.handleStream()``` indirectly through ```s.serverWorker()```, ```s.handleStream()``` is the key to handle the gRPC method call request. Remember that ```s.handleStream()``` always runs in its goroutine whaterver direct or indirect invokcation.
+Either invoke ```s.handleStream()``` directly or invoke ```s.handleStream()``` indirectly through ```s.serverWorker()```, ```s.handleStream()``` is the key to handle the gRPC method call request. Remember that ```s.handleStream()``` always runs in its goroutine whaterver direct or indirect invocation.
 
 ```go
 func NewServer(opt ...ServerOption) *Server {  
@@ -622,6 +622,25 @@ type serverWorkerData struct {
 }
 ```
 ### Handle request
+When ```operateHeaders()``` create the stream from the MetaHeadersFrame. One important step is to decode reqeust header from header frame. For our case, 
+```go 
+stream.method = "/helloworld.Greeter/SayHello"
+``` 
+plase see [Sending request headers](request.md#sending-request-headers). In the header frame, it's the ```:path``` field contains the service name and method name:
+
+```
+:method = POST 
+:scheme = http 
+:path = /helloworld.Greeter/SayHello 
+:authority = localhost
+te = trailers 
+grpc-timeout = 1S 
+content-type = application/grpc 
+grpc-encoding = gzip 
+authorization = Bearer xxxxxx 
+```
+
+```handleStream()``` split ```stream.Method() ``` into ```servce``` and ```method```. Then it try to find the register ```methodHandler``` with the specified ```service="helloworld.Greeter"``` and ```method="SayHello"```. If success, it will find the ```_Greeter_SayHello_Handler```, please refer to [Register service](#register-service) for detail. 
 
 ```go
 func (s *Server) handleStream(t transport.ServerTransport, stream *transport.Stream, trInfo *traceInfo) {
