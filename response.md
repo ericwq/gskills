@@ -1,4 +1,10 @@
 # Reply with response
+* [Application code](#application-code)
+* [Register service](#register-service)
+* [Serve request](#serve-request)                                
+  * [Prepare for stream](#prepare-for-stream)
+  * [Serve stream](#serve-stream) 
+  * [Handle request](#handle-request)
 
 gRPC over HTTP 2 use HTTP 2 frames. But how to do that exactly? let's explain the detail of implementation of server side response. [gRPC over HTTP2](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md) is a good start point to explain the design of gRPC over HTTP 2. In brief, the gRPC call response is transformed into three parts:
 
@@ -343,7 +349,7 @@ while ```DataFrame``` is a little bit complex. let's make it clear:
 * in ```HandleStreams()``` goroutine, After ```ReadFrame()``` read the data frame, ```t.handleData()```sends the data frame payload to ```s.handleStream()``` goroutine through the blocked go channel. 
 * now ```s.handleStream()``` get the method call parameter, continue the process.
 
-It deserves another chapter. Please see [Request parameter](parameters.md) for detail.
+How the two goroutine communicate with each other deserves another chapter. Please see [Request parameter](parameters.md) for detail.
 
 In the following code snippet, the error processing part is folded to avoid distraction.
 
@@ -427,7 +433,7 @@ func (fr *Framer) ReadFrame() (Frame, error) {
     return f, nil
 }      
 ```
-```operateHeaders``` create the stream from the ```MetaHeadersFrame```. Then it check the stream to make sure it's validity. The most important step is to call ```handle(s)``` which is the wrapper function for ```s.handleStream()```. ```s.handleStream()``` is the key to handle gRPC method call request.
+```operateHeaders()``` create the stream from the ```MetaHeadersFrame```. Then it check the stream to make sure it's validity. The most important step is to call ```handle(s)``` which is the wrapper function for ```s.handleStream()```. ```s.handleStream()``` is the key to handle gRPC method call request.
 
 Before dive into ```s.handleStream()```, Let's see how the wrapper function works. It check the ```s.opts.numServerWorkers``` to judge whether there is server workers configuration. If the answer is yes, The wrapper will try to send the ```serverWorkerData``` through ```s.serverWorkerChannels[?]``` to one of the server worker. The wrapper use rund robin policy to pick up the server worker. 
 
@@ -640,7 +646,7 @@ In the header frame, it's the ```:path``` field contains the service name and me
 ```go 
 stream.method = "/helloworld.Greeter/SayHello"
 ``` 
-plase see [Sending request headers](request.md#sending-request-headers). 
+plase see [Send request headers](request.md#send-request-headers). 
 
 ```handleStream()``` splits ```stream.Method() ``` into ```servce``` and ```method```. Then it try to find the register ```methodHandler``` with the specified ```service="helloworld.Greeter"``` and ```method="SayHello"```. If success, it will find the ```_Greeter_SayHello_Handler```, please refer to [Register service](#register-service) for detail. 
 

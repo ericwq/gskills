@@ -1,4 +1,9 @@
 # Send request
+* [Application code](#application-code)
+* [Client stub](#client-stub)
+  * [Fork road](#fork-road)
+  * [Send Request-Headers](#send-request-headers)
+  * [Send Length-Prefixed-Message and EOS](#send-length-prefixed-message-and-eos)
 
 gRPC over HTTP 2 use HTTP 2 frames. But how to do that exactly? let's explain the detail of implementation of gRPC request. [gRPC over HTTP2](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md) is a good start point to explain the design of gRPC over HTTP 2. In brief, the gRPC call request is transformed into three parts: 
 ```
@@ -92,7 +97,7 @@ func invoke(ctx context.Context, method string, req, reply interface{}, cc *Clie
     return cs.RecvMsg(reply)      
 }      
 ```
-### Sending Request-Headers
+### Send Request-Headers
 ```newClientStream()``` create the ```clientStream```, retry the ```op``` function several times until success or error. ```op``` is a anonymous warpper for the ```a.newStream()``` function, where ```a``` is the ```csAttempt``` just created with ```cs.newAttemptLocked()```
 
 ```go
@@ -220,7 +225,7 @@ func (t *http2Client) createHeaderFields(ctx context.Context, callHdr *CallHdr) 
 }
 
 ```
-### Sending Length-Prefixed-Message and EOS
+### Send Length-Prefixed-Message and EOS
 let's go back to the fork road and check the ```cs.SendMsg()```. 
 
 Inside```cs.SendMsg()```, first  ```prepareMsg()``` encode/compress request data. Secondly, you see the ```op``` function and ```cs.withRetry()``` again. Here ```prepareMsg()``` will encode and compress (if required) the request object to byte slice.
