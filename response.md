@@ -642,8 +642,9 @@ stream.method = "/helloworld.Greeter/SayHello"
 ``` 
 plase see [Sending request headers](request.md#sending-request-headers). 
 
-```handleStream()``` split ```stream.Method() ``` into ```servce``` and ```method```. Then it try to find the register ```methodHandler``` with the specified ```service="helloworld.Greeter"``` and ```method="SayHello"```. If success, it will find the ```_Greeter_SayHello_Handler```, please refer to [Register service](#register-service) for detail. 
+```handleStream()``` splits ```stream.Method() ``` into ```servce``` and ```method```. Then it try to find the register ```methodHandler``` with the specified ```service="helloworld.Greeter"``` and ```method="SayHello"```. If success, it will find the ```_Greeter_SayHello_Handler```, please refer to [Register service](#register-service) for detail. 
 
+for our case, ```s.processUnaryRPC()``` will be called next.
 ```go
 func (s *Server) handleStream(t transport.ServerTransport, stream *transport.Stream, trInfo *traceInfo) {
     sm := stream.Method()
