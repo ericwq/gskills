@@ -622,12 +622,9 @@ type serverWorkerData struct {
 }
 ```
 ### Handle request
-When ```operateHeaders()``` create the stream from the MetaHeadersFrame. One important step is to decode reqeust header from header frame. For our case, 
-```go 
-stream.method = "/helloworld.Greeter/SayHello"
-``` 
-plase see [Sending request headers](request.md#sending-request-headers). In the header frame, it's the ```:path``` field contains the service name and method name:
+When ```operateHeaders()``` create the stream from the MetaHeadersFrame. One important step is to decode reqeust header from header frame. 
 
+Here is the request header example:
 ```
 :method = POST 
 :scheme = http 
@@ -639,6 +636,11 @@ content-type = application/grpc
 grpc-encoding = gzip 
 authorization = Bearer xxxxxx 
 ```
+In the header frame, it's the ```:path``` field contains the service name and method name:
+```go 
+stream.method = "/helloworld.Greeter/SayHello"
+``` 
+plase see [Sending request headers](request.md#sending-request-headers). 
 
 ```handleStream()``` split ```stream.Method() ``` into ```servce``` and ```method```. Then it try to find the register ```methodHandler``` with the specified ```service="helloworld.Greeter"``` and ```method="SayHello"```. If success, it will find the ```_Greeter_SayHello_Handler```, please refer to [Register service](#register-service) for detail. 
 
