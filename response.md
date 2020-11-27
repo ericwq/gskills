@@ -427,9 +427,11 @@ func (fr *Framer) ReadFrame() (Frame, error) {
     return f, nil
 }      
 ```
-```operateHeaders``` create the stream from the ```MetaHeadersFrame```. Then it check the stream to make sure it's validity. The most important step is to call ```handle(s)``` which is the wrapper function for ```s.handleStream()```. 
+```operateHeaders``` create the stream from the ```MetaHeadersFrame```. Then it check the stream to make sure it's validity. The most important step is to call ```handle(s)``` which is the wrapper function for ```s.handleStream()```. ```s.handleStream()``` is the key to handle gRPC method call request.
 
-***TODO figure out the numServerWorkers*** 
+Before dive into ```s.handleStream()```, Let's see how the wrapper function works. It check the ```s.opts.numServerWorkers``` to judge whether there is server workers configuration. If the answer is yes, The wrapper will try to send the ```serverWorkerData``` through ```s.serverWorkerChannels[?]``` to one of the server worker. The wrapper use rund robin policy to pick up the server worker. 
+
+If there is no server worker configuration or the choosed server worker is busy, the wrapper start a new goroutine and call ```s.handleStream()```.
 
 In the following code snippet, some part is hided to avoid distraction.
 ```go
@@ -506,4 +508,185 @@ func (t *http2Server) operateHeaders(frame *http2.MetaHeadersFrame, handle func(
     return false
 }
 ```
+Let's spend some time to understand the server worker mechanism. 
+
+```s.opts.numServerWorkers``` can be set by ```NumStreamWorkers()```. If ```s.opts.numServerWorkers``` is set, ```s.initServerWorkers()``` will be called during ```NewServer``` process. Inside ```s.initServerWorkers()```, several ```s.serverWorker()``` goroutine will be started. ```s.serverWorkerChannels[i]``` is the communication channel. 
+
+```s.serverWorker()``` goroutine blocks on the ```ch chan *serverWorkerData``` channel and wait for the data to be fed by ```serveStreams```. When the for loop runs ```threshold``` times, it will reset the ```s.serverWorker()``` goroutine. The purpose is reset its stack so that large stacks don't live in memory forever. 
+
+Either invoke ```s.handleStream()``` directly or invoke ```s.handleStream()``` indirectly through ```s.serverWorker()```, ```s.handleStream()``` is the key to handle the gRPC method call request. Remember that ```s.handleStream()``` always runs in its goroutine whaterver direct or indirect invokcation.
+
+```go
+func NewServer(opt ...ServerOption) *Server {  
+    opts := defaultServerOptions                                                                                           
+    for _, o := range opt {                                                                                                
+        o.apply(&opts)                                                                                                                             
+    }                                                                                                                      
+    s := &Server{                                                                                                          
+        lis:      make(map[net.Listener]bool),                                                                                             
+        opts:     opts,                                                                                                    
+        conns:    make(map[transport.ServerTransport]bool),                                                                 
+        services: make(map[string]*serviceInfo),                                                                                                  
+        quit:     grpcsync.NewEvent(),                                                                                                  
+        done:     grpcsync.NewEvent(),                                                                                                                   
+        czData:   new(channelzData),                                                                                                                  
+    }                                                                                                                                                 
+    ...
+    if s.opts.numServerWorkers > 0 {                                                                                       
+        s.initServerWorkers()                                                                                              
+    }                                                                                                                                      
+                                                                                                                           
+    if channelz.IsOn() {                                                                                                    
+        s.channelzID = channelz.RegisterServer(&channelzServer{s}, "")                                                                            
+    }                                                                                                                                   
+    return s                                                                                                                                             
+}
+
+// NumStreamWorkers returns a ServerOption that sets the number of worker
+// goroutines that should be used to process incoming streams. Setting this to
+// zero (default) will disable workers and spawn a new goroutine for each
+// stream.
+//
+// Experimental
+//
+// Notice: This API is EXPERIMENTAL and may be changed or removed in a
+// later release.
+func NumStreamWorkers(numServerWorkers uint32) ServerOption {
+    // TODO: If/when this API gets stabilized (i.e. stream workers become the
+    // only way streams are processed), change the behavior of the zero value to
+    // a sane default. Preliminary experiments suggest that a value equal to the
+    // number of CPUs available is most performant; requires thorough testing.
+    return newFuncServerOption(func(o *serverOptions) {
+        o.numServerWorkers = numServerWorkers
+    })
+}
+...
+// serverWorkers blocks on a *transport.Stream channel forever and waits for
+// data to be fed by serveStreams. This allows different requests to be
+// processed by the same goroutine, removing the need for expensive stack
+// re-allocations (see the runtime.morestack problem [1]).
+//
+// [1] https://github.com/golang/go/issues/18138
+func (s *Server) serverWorker(ch chan *serverWorkerData) {
+    // To make sure all server workers don't reset at the same time, choose a
+    // random number of iterations before resetting.
+    threshold := serverWorkerResetThreshold + grpcrand.Intn(serverWorkerResetThreshold)
+    for completed := 0; completed < threshold; completed++ {
+        data, ok := <-ch
+        if !ok {
+            return
+        }
+        s.handleStream(data.st, data.stream, s.traceInfo(data.st, data.stream))
+        data.wg.Done()
+    }
+    go s.serverWorker(ch)
+}
+
+// initServerWorkers creates worker goroutines and channels to process incoming
+// connections to reduce the time spent overall on runtime.morestack.
+func (s *Server) initServerWorkers() {
+    s.serverWorkerChannels = make([]chan *serverWorkerData, s.opts.numServerWorkers)
+    for i := uint32(0); i < s.opts.numServerWorkers; i++ {
+        s.serverWorkerChannels[i] = make(chan *serverWorkerData)
+        go s.serverWorker(s.serverWorkerChannels[i])
+    }
+}
+...
+type Server struct {                                                          
+    opts serverOptions                                                         
+                                                                             
+    mu       sync.Mutex // guards following                            
+    lis      map[net.Listener]bool                          
+    conns    map[transport.ServerTransport]bool
+    serve    bool
+    drain    bool                                                           
+    cv       *sync.Cond              // signaled when connections close for GracefulStop
+    services map[string]*serviceInfo // service name -> service info     
+    events   trace.EventLog                               
+  
+    quit               *grpcsync.Event          
+    done               *grpcsync.Event                    
+    channelzRemoveOnce sync.Once                                             
+    serveWG            sync.WaitGroup // counts active Serve goroutines for GracefulStop
+                                                                                       
+    channelzID int64 // channelz unique identification number
+    czData     *channelzData
+                
+    serverWorkerChannels []chan *serverWorkerData
+}        
+...
+type serverWorkerData struct {
+    st     transport.ServerTransport
+    wg     *sync.WaitGroup
+    stream *transport.Stream
+}
+```
 ### Handle request
+
+```go
+func (s *Server) handleStream(t transport.ServerTransport, stream *transport.Stream, trInfo *traceInfo) {
+    sm := stream.Method()
+    if sm != "" && sm[0] == '/' {
+        sm = sm[1:]
+    }
+    pos := strings.LastIndex(sm, "/")
+    if pos == -1 {
+        if trInfo != nil {
+            trInfo.tr.LazyLog(&fmtStringer{"Malformed method name %q", []interface{}{sm}}, true)
+            trInfo.tr.SetError()
+        }
+        errDesc := fmt.Sprintf("malformed method name: %q", stream.Method())
+        if err := t.WriteStatus(stream, status.New(codes.ResourceExhausted, errDesc)); err != nil {
+            if trInfo != nil {
+                trInfo.tr.LazyLog(&fmtStringer{"%v", []interface{}{err}}, true)
+                trInfo.tr.SetError()
+            }
+            channelz.Warningf(logger, s.channelzID, "grpc: Server.handleStream failed to write status: %v", err)
+        }
+        if trInfo != nil {
+            trInfo.tr.Finish()
+        }
+        return
+    }
+    service := sm[:pos]
+    method := sm[pos+1:]
+
+    srv, knownService := s.services[service]
+    if knownService {
+        if md, ok := srv.methods[method]; ok {
+            s.processUnaryRPC(t, stream, srv, md, trInfo)
+            return
+        }
+        if sd, ok := srv.streams[method]; ok {
+            s.processStreamingRPC(t, stream, srv, sd, trInfo)
+            return
+        }
+    }
+    // Unknown service, or known server unknown method.           
+    if unknownDesc := s.opts.unknownStreamDesc; unknownDesc != nil {
+        s.processStreamingRPC(t, stream, nil, unknownDesc, trInfo)
+        return        
+    }                 
+    var errDesc string                                      
+    if !knownService {
+        errDesc = fmt.Sprintf("unknown service %v", service)                      
+    } else {
+        errDesc = fmt.Sprintf("unknown method %v for service %v", method, service)
+    }                                      
+    if trInfo != nil {      
+        trInfo.tr.LazyPrintf("%s", errDesc)
+        trInfo.tr.SetError()                                                               
+    }                     
+    if err := t.WriteStatus(stream, status.New(codes.Unimplemented, errDesc)); err != nil {
+        if trInfo != nil {      
+            trInfo.tr.LazyLog(&fmtStringer{"%v", []interface{}{err}}, true)
+            trInfo.tr.SetError()                                                                            
+        }
+        channelz.Warningf(logger, s.channelzID, "grpc: Server.handleStream failed to write status: %v", err)
+    }                     
+    if trInfo != nil {
+        trInfo.tr.Finish()
+    }
+}
+
+```
