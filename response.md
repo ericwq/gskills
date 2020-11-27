@@ -648,7 +648,7 @@ stream.method = "/helloworld.Greeter/SayHello"
 ``` 
 plase see [Send request headers](request.md#send-request-headers). 
 
-```handleStream()``` splits ```stream.Method() ``` into ```servce``` and ```method```. Then it try to find the register ```methodHandler``` with the specified ```service="helloworld.Greeter"``` and ```method="SayHello"```. If success, it will find the ```_Greeter_SayHello_Handler```, please refer to [Register service](#register-service) for detail. 
+```handleStream()``` splits ```stream.Method() ``` into ```servce``` and ```method```. Then it try to find the registered ```methodHandler``` with the specified ```service="helloworld.Greeter"``` and ```method="SayHello"```. If success, it will find the ```_Greeter_SayHello_Handler```, please refer to [Register service](#register-service) for detail.  ```handleStream()``` also provide a solution for unknown service and/or unknown method. 
 
 for our case, ```s.processUnaryRPC()``` will be called next.
 ```go
@@ -716,5 +716,92 @@ func (s *Server) handleStream(t transport.ServerTransport, stream *transport.Str
         trInfo.tr.Finish()
     }
 }
+```
+```processUnaryRPC()``` perform the following work:
+* prepare the compression and decompression object.
+* call ```recvAndDecompress()``` to get the gRPC method call parameter data: ```d```.
+* prepare the decode function ```df``` for method handler.
+* call ```md.Handler()``` to process the gRPC method call, the response is ```reply```
+* call ```s.sendResponse()``` to send the response to client. Here the ***Response-Headers*** and ***Length-Prefixed-Message*** will be sent.
+* call ``t.WriteStatus()``` to send the trailer to end the stream. Here the ***Trailers*** will be sent.
 
+Now you understand the whole picture, let's dive into it one by one.
+
+In the following code snippet, some code is folded to avoid distraction.
+```go
+func (s *Server) processUnaryRPC(t transport.ServerTransport, stream *transport.Stream, info *serviceInfo, md *MethodDesc, trInfo *traceInfo) (err error) {
++-- 80 lines: sh := s.opts.statsHandler·····························································································································
+    // comp and cp are used for compression.  decomp and dc are used for
+    // decompression.  If comp and decomp are both set, they are the same;
+    // however they are kept separate to ensure that at most one of the
+    // compressor/decompressor variable pairs are set for use later.
+    var comp, decomp encoding.Compressor
+    var cp Compressor 
+    var dc Decompressor            
+                                      
++-- 27 lines: If dc is set and matches the stream's compression, use it.  Otherwise, try············································································
+             
+    var payInfo *payloadInfo                          
+    if sh != nil || binlog != nil {
+        payInfo = &payloadInfo{}
+    }                                                  
+    d, err := recvAndDecompress(&parser{r: stream}, stream, dc, s.opts.maxReceiveMessageSize, payInfo, decomp)
+    if err != nil {                                                               
+        if e := t.WriteStatus(stream, status.Convert(err)); e != nil {             
+            channelz.Warningf(logger, s.channelzID, "grpc: Server.processUnaryRPC failed to write status %v", e)
+        }                                    
+        return err
+    }                                                                              
+    if channelz.IsOn() {                                                         
+        t.IncrMsgRecv()                                                            
+    }                                                                           
+    df := func(v interface{}) error {                   
+        if err := s.getCodec(stream.ContentSubtype()).Unmarshal(d, v); err != nil {
+            return status.Errorf(codes.Internal, "grpc: error unmarshalling request: %v", err)
+        }                                       
+        if sh != nil {                                                             
+            sh.HandleRPC(stream.Context(), &stats.InPayload{
+                RecvTime:   time.Now(),
+                Payload:    v,    
+                WireLength: payInfo.wireLength + headerLen,
+                Data:       d,
+                Length:     len(d),
+            })
+        }
+        if binlog != nil {
+            binlog.Log(&binarylog.ClientMessage{
+                Message: d,
+            })
+        }
+        if trInfo != nil {
+            trInfo.tr.LazyLog(&payload{sent: false, msg: v}, true)
+        }
+        return nil
+    }
+    ctx := NewContextWithServerTransportStream(stream.Context(), stream)
+    reply, appErr := md.Handler(info.serviceImpl, ctx, df, s.opts.unaryInt)
+    if appErr != nil {
++-- 27 lines: appStatus, ok := status.FromError(appErr)·············································································································
+    }
+    if trInfo != nil {
+        trInfo.tr.LazyLog(stringer("OK"), false)
+    }
+    opts := &transport.Options{Last: true}
+
+    if err := s.sendResponse(t, stream, reply, cp, opts, comp); err != nil {
++-- 27 lines: if err == io.EOF {····································································································································
+    }
++-- 15 lines: if binlog != nil {····································································································································
+    // TODO: Should we be logging if writing status failed here, like above?
+    // Should the logging be in WriteStatus?  Should we ignore the WriteStatus
+    // error or allow the stats handler to see it?
+    err = t.WriteStatus(stream, statusOK)
+    if binlog != nil {
+        binlog.Log(&binarylog.ServerTrailer{
+            Trailer: stream.Trailer(),
+            Err:     appErr,
+        })
+    }
+    return err
+}
 ```
