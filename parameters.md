@@ -1,10 +1,10 @@
 # Request parameters
-* [The problem](the-problem)
-* [The clue](the-clue)
-* [Lock the method](lock-the-method)
-* [Trace it](trace-it)
-* [Message reader](message-reader)
-* [Message sender](message-sender)
+* [The problem](#the-problem)
+* [The clue](#the-clue)
+* [Lock the method](#lock-the-method)
+* [Trace it](#trace-it)
+* [Message reader](#message-reader)
+* [Message sender](#message-sender)
 
 At [Serve stream](response.md#serve-stream), there is a problem we didn't discuss the detail. In one word, How does the server read the request parameter?
 
