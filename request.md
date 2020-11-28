@@ -152,7 +152,7 @@ func (a *csAttempt) newStream() error {
     return nil       
 } 
 ```
-```a.t.NewStream()``` create the header frame and send it with ```t.controlBuf.executeAndPut()```. Now the ***Request-Headers*** has been send. We will not discuss the ```t.controlBuf``` detail. It deserve another chapter.
+```a.t.NewStream()``` create the header frame and send it with ```t.controlBuf.executeAndPut()```. Now the ***Request-Headers*** has been send. We will not discuss the ```t.controlBuf``` detail. See [controlBuffer and loopy](control.md) for detail.
 
 ```go
 // NewStream creates a stream and registers it into the transport as "active"
@@ -311,7 +311,7 @@ func (a *csAttempt) sendMsg(m interface{}, hdr, payld, data []byte) error {
     return nil       
 }       
 ```
-```a.t.Write()``` create the data frame and send it with ```t.controlBuf.put(df)```. Now, the ***Length-Prefixed-Message and EOS*** has been send out. We will not discuss the ```t.controlBuf``` detail. It deserve another chapter.
+```a.t.Write()``` create the data frame and send it with ```t.controlBuf.put(df)```. Now, the ***Length-Prefixed-Message and EOS*** has been send out. We will not discuss the ```t.controlBuf``` detail. See [controlBuffer and loopy](control.md) for detail. 
 
 ```go
 // Write formats the data into HTTP2 data frame(s) and sends it out. The caller
