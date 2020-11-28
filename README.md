@@ -19,11 +19,12 @@ My original goal is to understand the source code of [gRPC-go](https://github.co
   * [Handle request](response.md#handle-request)
 ### [Request parameters](parameters.md)
 ### [controlBuffer and loopy](control.md)
-### Authentication
 ### [Interceptor](interceptor.md)
 * [Interceptor chain execution flow](interceptor.md#interceptor-chain-execution-flow)   
 * [Launch Intercetor](interceptor.md#launch-interceptor)  
 * [Use Interceptor](interceptor.md#use-interceptor)
+### [Authentication](auth.md)
+### [Load Balancing](load.md)
 
 ## Reading material
 The following books help me building a solid fundation for http2 and gRPC. They answer a lot of questions about Why ,What and some part of How, while gSkills purely focus on How to implement them in gRPC.
