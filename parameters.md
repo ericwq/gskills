@@ -1,7 +1,13 @@
 # Request parameters
-
+## The problem
+## The clue
+## Lock the method
+## Trace it
+## Channel reader
+## Channel sender
 At [Serve stream](response.md#serve-stream), there is a problem we didn't tell the detail. In one word, How does the server read the request parameter?
 
+## The problem
 According to the [gRPC over HTTP2](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md). The request is composed by the following parts.
 ```
 Request → Request-Headers *Length-Prefixed-Message EOS. 
@@ -149,6 +155,7 @@ func (s *Server) handleStream(t transport.ServerTransport, stream *transport.Str
 +-- 20 lines: var errDesc string····································································································································
 }                                             
 ```
+## The clue
 After check the serve request sequence, The ```recvAndDecompress()``` show his face. Before the invocation of ```recvAndDecompress()``` there is no sign of read the reqeust data frame. After ```recvAndDecompress()``` gRPC is ready to call ```md.Handler()```.
 ```go
 func (s *Server) processUnaryRPC(t transport.ServerTransport, stream *transport.Stream, info *serviceInfo, md *MethodDesc, trInfo *traceInfo) (err error) {
@@ -267,8 +274,8 @@ func recvAndDecompress(p *parser, s *transport.Stream, dc Decompressor, maxRecei
     return d, nil
 }
 ```
+## Lock the method
 In ```recvMsg()```, It looks like ```p.r.Read()``` read the data frame. From  [gRPC over HTTP2](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md) we know this:
-
 ```
 The repeated sequence of Length-Prefixed-Message items is delivered in DATA frames
 
@@ -343,6 +350,7 @@ func (p *parser) recvMsg(maxReceiveMessageSize int) (pf payloadFormat, msg []byt
     return pf, msg, nil
 }
 ```
+## Trace it
 The value of ```p``` is assigned through the following statement:
 
 ```go
@@ -495,6 +503,7 @@ func (r *recvBufferReader) readAdditional(m recvMsg, p []byte) (n int, err error
     return copied, nil
 }
 ```
+## Channel reader
 * ```r.recv``` is ```*recvBuffer```. It's ```get()``` method just return the ```<-chan recvMsg```. 
 * ```r.recv``` is assigned by ```s.buf``` from the above code. 
 * ```s.buf``` is assigned by ```buf```, which is the return value of ```newRecvBuffer()```
@@ -560,3 +569,4 @@ func (t *http2Server) operateHeaders(frame *http2.MetaHeadersFrame, handle func(
     ...
 }
 ```
+## Channel sender
