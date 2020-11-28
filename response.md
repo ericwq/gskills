@@ -723,7 +723,7 @@ func (s *Server) handleStream(t transport.ServerTransport, stream *transport.Str
 * prepare the decode function ```df``` for method handler.
 * call ```md.Handler()``` to process the gRPC method call, the response is ```reply```
 * call ```s.sendResponse()``` to send the response to client. Here the ***Response-Headers*** and ***Length-Prefixed-Message*** will be sent.
-* call ``t.WriteStatus()``` to send the trailer to end the stream. Here the ***Trailers*** will be sent.
+* call ```t.WriteStatus()``` to send the trailer to end the stream. Here the ***Trailers*** will be sent.
 
 Now we know the whole picture, let's dive each part one by one.
 
@@ -1011,8 +1011,7 @@ func (t *http2Server) writeHeaderLocked(s *Stream) error {
     return nil
 }
 ```
-``t.WriteStatus()``` is the last one to be called in ```processUnaryRPC()```. It job is sending stream status to the client and terminates the stream.
-
+```t.WriteStatus()``` is the last one to be called in ```processUnaryRPC()```. It job is sending stream status to the client and terminates the stream.
 
 ```t.Write()``` build the header fields and trailer header frame and send it back with ```t.controlBuf```. Then call ```t.finishStream()``` to end the stream. ```t.finishStream()``` also use ```t.controlBuf``` to write back to client. See [controlBuffer and loopy](control.md) for detail.
 
