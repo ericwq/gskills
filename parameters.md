@@ -149,10 +149,7 @@ func (s *Server) handleStream(t transport.ServerTransport, stream *transport.Str
 +-- 20 lines: var errDesc string····································································································································
 }                                             
 ```
-The following diagram is the serve request sequence.
-![images.004.png](images/images.004.png)
-
-After check the serve request sequence, The ```recvAndDecompress()``` show his face. Before the invocation of ```recvAndDecompress()``` there is no sign of read the reqeust data frame. After ```recvAndDecompress()``` gRPC is ready to call ```md.Handler().
+After check the serve request sequence, The ```recvAndDecompress()``` show his face. Before the invocation of ```recvAndDecompress()``` there is no sign of read the reqeust data frame. After ```recvAndDecompress()``` gRPC is ready to call ```md.Handler()```.
 ```go
 func (s *Server) processUnaryRPC(t transport.ServerTransport, stream *transport.Stream, info *serviceInfo, md *MethodDesc, trInfo *traceInfo) (err error) {
 +-- 80 lines: sh := s.opts.statsHandler·····························································································································
@@ -280,7 +277,13 @@ The repeated sequence of Length-Prefixed-Message items is delivered in DATA fram
 * Message-Length → {length of Message} # encoded as 4 byte unsigned integer (big endian)
 * Message → *{binary octet}
 ```
-It's clear that ```p.r.Read()``` is used to read the data frame. From the parser's definition, it's just a normal struct with a recvMsg method. While nothing is special, except the ```r io.Reader``` field.
+
+After carefully check the source code of ```recvMsg()```. 
+* ```pf``` is the *Compressed-Flag*. 
+* ```length``` is the *Message-Length*.
+* ```msg``` is the *Message*
+
+It's clear that ```p.r.Read()``` is used to read the data frame. From the ```parser``` definition, it's just a normal struct with a recvMsg method. Its ```header [5]byte``` field is normal, while the ```r io.Reader``` field is the suspect. Let's check the ```p.r.Read()``` method.
 
 ```go
 // parser reads complete gRPC messages from the underlying reader.
@@ -339,5 +342,221 @@ func (p *parser) recvMsg(maxReceiveMessageSize int) (pf payloadFormat, msg []byt
     }
     return pf, msg, nil
 }
+```
+The value of ```p``` is assigned through the following statement:
 
+```go
+d, err := recvAndDecompress(&parser{r: stream}, stream, dc, s.opts.maxReceiveMessageSize, payInfo, decomp)
+```
+The following call stack will happens: 
+* ```p.r.Read()``` calls ```Stream.Read()````,
+* ```Stream.Read()``` calls ```s.requestRead()```, which calls ```t.adjustWindow()```, no data read, ignore it.
+* ```Stream.Read()``` calls ```io.ReadFull(s.trReader, p)```, which calls ```s.trReader.Read()```
+* ```s.trReader.Read()``` calls ``` t.reader.Read(p)``` and ```t.windowHandler(n)```, the last will be ignored.
+* ```t.reader.Read(p)``` calls ```recvBufferReader.Read()```
+* ```recvBufferReader.Read()``` calls ```recvBufferReader.read()```
+* ```recvBufferReader.read()``` read ```recvMsg``` from channel ```m := <-r.recv.get()``` and calls ````recvBufferReader.readAdditional()``` to finish the read action.
+
+Let's check the ```r.recv.get()```.
+
+For convenience, All realated code is showned in one place.
+```go
+// Read reads all p bytes from the wire for this stream.                                                                                          
+func (s *Stream) Read(p []byte) (n int, err error) {                                                                                               
+    // Don't request a read if there was an error earlier                                                                                               
+    if er := s.trReader.(*transportReader).er; er != nil {                                                                                                
+        return 0, er                                                                                                                                    
+    }                                                                                                                                                  
+    s.requestRead(len(p))                                                                                                                             
+    return io.ReadFull(s.trReader, p)                                                                                                                     
+}                                                                                                                                                      
+
+// operateHeader takes action on the decoded headers.                                                                                                
+func (t *http2Server) operateHeaders(frame *http2.MetaHeadersFrame, handle func(*Stream), traceCtx func(context.Context, string) context.Context) (fatal bool) {
+   ...
+   s.requestRead = func(n int) {                                                                                                                           
+       t.adjustWindow(s, uint32(n))                                                                                                                     
+   }                                                                                                                                                       
+   ...
+   s.trReader = &transportReader{                                                                                            
+       reader: &recvBufferReader{                                                                                            
+           ctx:        s.ctx,                                                                                                
+           ctxDone:    s.ctxDone,                                                                                            
+           recv:       s.buf,                                                                                                                               
+           freeBuffer: t.bufferPool.put,
+       },                                                                                                                                                       
+       windowHandler: func(n int) {                                                                                                                             
+           t.updateWindow(s, uint32(n))
+       },                                                                                                                    
+   }
+   ...
+}
+
+// adjustWindow sends out extra window update over the initial window size                                                                                          
+// of stream if the application is requesting data larger in size than                                                        
+// the window.                                                                                                                
+func (t *http2Server) adjustWindow(s *Stream, n uint32) {
+    if w := s.fc.maybeAdjust(n); w > 0 {                                                                                      
+        t.controlBuf.put(&outgoingWindowUpdate{streamID: s.id, increment: w})                                                 
+    }                                                                                                                                                        
+                                                                                                                              
+}                                                                                                                                                                
+                                                                                                                                                                 
+// updateWindow adjusts the inbound quota for the stream and the transport.                                                   
+// Window updates will deliver to the controller for sending when                                                             
+// the cumulative quota exceeds the corresponding threshold.                                                                  
+func (t *http2Server) updateWindow(s *Stream, n uint32) {                                                                                                       
+    if w := s.fc.onRead(n); w > 0 {                                                                                           
+        t.controlBuf.put(&outgoingWindowUpdate{streamID: s.id,                                                                
+            increment: w,                                                                                                                                 
+        })                                                                                                                                                           
+    }                                                                                                                                                               
+}                                                                                                                             
+
+// tranportReader reads all the data available for this Stream from the transport and                                                             
+// passes them into the decoder, which converts them into a gRPC message stream.                                                          
+// The error is io.EOF when the stream is done or another non-nil error if
+// the stream broke.                                                                                                                            
+type transportReader struct {                                                                                                                   
+    reader io.Reader                                                                                                                                      
+    // The handler to control the window update procedure for both this                                                       
+    // particular stream and the associated transport.
+    windowHandler func(int)                                                                                                   
+    er            error                                                                                                                                             
+}                                                                                                                             
+                                                                                                                              
+func (t *transportReader) Read(p []byte) (n int, err error) {                                                                 
+    n, err = t.reader.Read(p)                                                                                                 
+    if err != nil {                                                                                                           
+        t.er = err                                                                                                                                           
+        return                           
+    }                                                                                                                                                            
+    t.windowHandler(n)                                                                                                                                           
+    return                              
+}                                                                                                                             
+
+// recvBufferReader implements io.Reader interface to read the data from
+// recvBuffer.
+type recvBufferReader struct {
+    closeStream func(error) // Closes the client transport stream with the given error and nil trailer metadata.
+    ctx         context.Context                                                                                               
+    ctxDone     <-chan struct{} // cache of ctx.Done() (for performance).
+    recv        *recvBuffer                                                                                                   
+    last        *bytes.Buffer // Stores the remaining data in the previous calls.                                                                                   
+    err         error                                                                                                         
+    freeBuffer  func(*bytes.Buffer)                                                                                           
+}                                                                                                                             
+                                                                                                                              
+// Read reads the next len(p) bytes from last. If last is drained, it tries to                                                
+// read additional data from recv. It blocks if there no additional data available                                                                           
+// in recv. If Read returns any non-nil error, it will continue to return that error.
+func (r *recvBufferReader) Read(p []byte) (n int, err error) {                                                                                                   
+    if r.err != nil {                                                                                                                                            
+        return 0, r.err                 
+    }                                                                                                                         
+    if r.last != nil {                                                                                                        
+        // Read remaining data left in last call.                                                                                             
+        copied, _ := r.last.Read(p)    
+        if r.last.Len() == 0 {                                             
+            r.freeBuffer(r.last)         
+            r.last = nil
+        }
+        return copied, nil
+    }
+    if r.closeStream != nil {
+        n, r.err = r.readClient(p)
+    } else {
+        n, r.err = r.read(p)
+    }
+    return n, r.err
+}
+
+func (r *recvBufferReader) read(p []byte) (n int, err error) {                                                                                    
+    select {                                                                                                                                                     
+    case <-r.ctxDone:                                                                                                                                              
+        return 0, ContextErr(r.ctx.Err())                                                                                                              
+    case m := <-r.recv.get():                                                                                                                             
+        return r.readAdditional(m, p)                                                                                                       
+    }                                                                                                                                                           
+}                                                                                                                                                             
+
+func (r *recvBufferReader) readAdditional(m recvMsg, p []byte) (n int, err error) {
+    r.recv.load()
+    if m.err != nil {
+        return 0, m.err
+    }
+    copied, _ := m.buffer.Read(p)
+    if m.buffer.Len() == 0 {
+        r.freeBuffer(m.buffer)
+        r.last = nil
+    } else {
+        r.last = m.buffer
+    }
+    return copied, nil
+}
+```
+* ```r.recv``` is ```*recvBuffer```. It's ```get()``` method just return the ```<-chan recvMsg```. 
+* ```r.recv``` is assigned by ```s.buf``` from the above code. 
+* ```s.buf``` is assigned by ```buf```, which is the return value of ```newRecvBuffer()```
+* ```newRecvBuffer()``` simple create and return a ```*recvBuffer```, the ```recvBuffer.c``` field is a buffered channel:```chan recvMsg``` 
+So the conclusion about ```recvMsg()```is: ```recvMsg()``` try to read the reqeust parameter from a channel ```chan recvMsg```. A buffered channel.
+
+Then the next question is: who send the request parameter to that channel?
+
+For convenience, All realated code is showned in one place.
+
+```go
+// recvMsg represents the received msg from the transport. All transport
+// protocol specific info has been removed.
+type recvMsg struct {                                                                                           
+    buffer *bytes.Buffer          
+    // nil: received some data                                           
+    // io.EOF: stream is completed. data is nil.                    
+    // other non-nil error: transport failure. data is nil.                      
+    err error                                                        
+}                                                                            
+            
+// recvBuffer is an unbounded channel of recvMsg structs.
+//                                                                            
+// Note: recvBuffer differs from buffer.Unbounded only in the fact that it                                                                                      
+// holds a channel of recvMsg structs instead of objects implementing "item"                                                                                    
+// interface. recvBuffer is written to much more often and using strict recvMsg
+// structs helps avoid allocation in "recvBuffer.put"                          
+type recvBuffer struct {                                                   
+    c       chan recvMsg                                                        
+    mu      sync.Mutex                                                      
+    backlog []recvMsg                                       
+    err     error                                                          
+}                                                                             
+
+// get returns the channel that receives a recvMsg in the buffer.                                                                                       
+//                                                                                                                                                
+// Upon receipt of a recvMsg, the caller should call load to send another                                                                     
+// recvMsg onto the channel if there is any.                                                                                                                       
+func (b *recvBuffer) get() <-chan recvMsg {                                                                                                            
+    return b.c                               
+}                                                                                                                 
+
+func newRecvBuffer() *recvBuffer {                                                                                                                     
+    b := &recvBuffer{                                                                                                                    
+        c: make(chan recvMsg, 1),                                                                                                                
+    }                                                                                                                                         
+    return b                                                                                                                                                    
+}                                                                                                                              
+
+// operateHeader takes action on the decoded headers.                                                                          
+func (t *http2Server) operateHeaders(frame *http2.MetaHeadersFrame, handle func(*Stream), traceCtx func(context.Context, string) context.Context) (fatal bool) {
+    ...
+    buf := newRecvBuffer()        
+    s := &Stream{                        
+        id:             streamID, 
+        st:             t,          
+        buf:            buf,             
+        fc:             &inFlow{limit: uint32(t.initialWindowSize)},
+        recvCompress:   state.data.encoding,     
+        method:         state.data.method,
+        contentSubtype: state.data.contentSubtype,
+    }                                                                               
+    ...
+}
 ```
