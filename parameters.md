@@ -1,10 +1,11 @@
 # Request parameters
-## The problem
-## The clue
-## Lock the method
-## Trace it
-## Channel reader
-## Channel sender
+* [The problem](the-problem)
+* [The clue](the-clue)
+* [Lock the method](lock-the-method)
+* [Trace it](trace-it)
+* [Message reader](message-reader)
+* [Message sender](message-sender)
+
 At [Serve stream](response.md#serve-stream), there is a problem we didn't tell the detail. In one word, How does the server read the request parameter?
 
 ## The problem
@@ -503,7 +504,7 @@ func (r *recvBufferReader) readAdditional(m recvMsg, p []byte) (n int, err error
     return copied, nil
 }
 ```
-## Channel reader
+## Message reader
 * ```r.recv``` is ```*recvBuffer```. It's ```get()``` method just return the ```<-chan recvMsg```. 
 * ```r.recv``` is assigned by ```s.buf``` from the above code. 
 * ```s.buf``` is assigned by ```buf```, which is the return value of ```newRecvBuffer()```
@@ -569,4 +570,4 @@ func (t *http2Server) operateHeaders(frame *http2.MetaHeadersFrame, handle func(
     ...
 }
 ```
-## Channel sender
+## Message sender
