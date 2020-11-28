@@ -6,7 +6,7 @@
 * [Message reader](message-reader)
 * [Message sender](message-sender)
 
-At [Serve stream](response.md#serve-stream), there is a problem we didn't tell the detail. In one word, How does the server read the request parameter?
+At [Serve stream](response.md#serve-stream), there is a problem we didn't discuss the detail. In one word, How does the server read the request parameter?
 
 ## The problem
 According to the [gRPC over HTTP2](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md). The request is composed by the following parts.
