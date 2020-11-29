@@ -156,7 +156,14 @@ func (s *Server) handleStream(t transport.ServerTransport, stream *transport.Str
 }                                             
 ```
 ## The clue
-After check the serve request sequence, The ```recvAndDecompress()``` show his face. Before the invocation of ```recvAndDecompress()``` there is no sign of reading the reqeust parameter. After ```recvAndDecompress()``` the gRPC is ready to call ```md.Handler()```. So the ```recvAndDecompress()``` must did something.
+
+I know the clue part is too simple to believe it. Yes, sometimes the answer is simple, while it took me some time to find it. No magic, pity.
+
+In ```s.handleStream()``` 
+* before the invocation of ```recvAndDecompress()``` there is no sign of reading the reqeust parameter.
+* after ```recvAndDecompress()``` the gRPC is ready to call ```md.Handler()```. 
+
+So the ```recvAndDecompress()``` must did something.
 ```go
 func (s *Server) processUnaryRPC(t transport.ServerTransport, stream *transport.Stream, info *serviceInfo, md *MethodDesc, trInfo *traceInfo) (err error) {
 +-- 80 lines: sh := s.opts.statsHandler·····························································································································
@@ -275,7 +282,7 @@ func recvAndDecompress(p *parser, s *transport.Stream, dc Decompressor, maxRecei
 }
 ```
 ## Lock the method
-In ```recvMsg()```, It looks like ```p.r.Read()``` read the data frame. From  [gRPC over HTTP2](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md) we know this:
+In ```recvMsg()```, It looks like ```p.r.Read()``` read the data frame. From  [gRPC over HTTP2](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md) we know the following:
 ```
 The repeated sequence of Length-Prefixed-Message items is delivered in DATA frames
 
