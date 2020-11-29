@@ -2,7 +2,6 @@
 * [The problem](#the-problem)
 * [The clue](#the-clue)
 * [Lock the method](#lock-the-method)
-* [Trace it](#trace-it)
 * [Message reader](#message-reader)
 * [Message sender](#message-sender)
 
@@ -14,9 +13,9 @@ According to the [gRPC over HTTP2](https://github.com/grpc/grpc/blob/master/doc/
 Request → Request-Headers *Length-Prefixed-Message EOS. 
 ```
 Let's describe the probelm in detail. In [Serve stream](response.md#serve-stream), 
-* ```s.handleStream()``` and ```st.HandleStreams``` are called to handle the stream and run in its goroutine.
+* ```st.HandleStreams()``` are called to handle the stream and run in its goroutine.
 * Meanwhile, ```s.handleStream()``` is called to handle the gRPC method call and run in its goroutine.
-* ```st.HandleStreams``` will read the frame from the wire continuesly
+* ```st.HandleStreams()``` will read the frame from the wire continuesly
 * ```s.handleStream()``` also need to read the request parameter.
 
 Now you has the same problem as I had: How the two goroutine communicate with each other?
@@ -351,20 +350,19 @@ func (p *parser) recvMsg(maxReceiveMessageSize int) (pf payloadFormat, msg []byt
     return pf, msg, nil
 }
 ```
-## Trace it
 The value of ```p``` is assigned through the following statement:
 
 ```go
 d, err := recvAndDecompress(&parser{r: stream}, stream, dc, s.opts.maxReceiveMessageSize, payInfo, decomp)
 ```
 The following call stack will happens: 
-* ```p.r.Read()``` calls ```Stream.Read()````,
+* ```p.r.Read()``` calls ```Stream.Read()```,
 * ```Stream.Read()``` calls ```s.requestRead()```, which calls ```t.adjustWindow()```, no data read, ignore it.
 * ```Stream.Read()``` calls ```io.ReadFull(s.trReader, p)```, which calls ```s.trReader.Read()```
 * ```s.trReader.Read()``` calls ``` t.reader.Read(p)``` and ```t.windowHandler(n)```, the last will be ignored.
 * ```t.reader.Read(p)``` calls ```recvBufferReader.Read()```
 * ```recvBufferReader.Read()``` calls ```recvBufferReader.read()```
-* ```recvBufferReader.read()``` read ```recvMsg``` from channel ```m := <-r.recv.get()``` and calls ````recvBufferReader.readAdditional()``` to finish the read action.
+* ```recvBufferReader.read()``` read ```recvMsg``` from channel ```m := <-r.recv.get()``` and calls ```recvBufferReader.readAdditional()``` to finish the read action.
 
 Let's check the ```r.recv.get()```.
 
@@ -509,7 +507,8 @@ func (r *recvBufferReader) readAdditional(m recvMsg, p []byte) (n int, err error
 * ```r.recv``` is assigned by ```s.buf``` from the above code. 
 * ```s.buf``` is assigned by ```buf```, which is the return value of ```newRecvBuffer()```
 * ```newRecvBuffer()``` simple create and return a ```*recvBuffer```, the ```recvBuffer.c``` field is a buffered channel:```chan recvMsg``` 
-So the conclusion about ```recvMsg()```is: ```recvMsg()``` try to read the reqeust parameter from a channel ```chan recvMsg```. A buffered channel.
+
+In Conclusion: ```s.handleStream()``` try to read the reqeust parameter from a channel ```chan recvMsg```. Which is a buffered channel belong to ```Stream.buf.c``` 
 
 Then the next question is: who send the request parameter to that channel?
 
@@ -571,3 +570,178 @@ func (t *http2Server) operateHeaders(frame *http2.MetaHeadersFrame, handle func(
 }
 ```
 ## Message sender
+
+Let's back to the start point. In ```HandleStreams()```, ```t.framer.fr.ReadFrame()``` has already been checked. There is no sign of sending message to channel. The next reasonable method is ```t.handleData(frame)```.
+
+```go
+func (t *http2Server) handleData(f *http2.DataFrame) {
+    size := f.Header().Length
+    var sendBDPPing bool
+    if t.bdpEst != nil {
+        sendBDPPing = t.bdpEst.add(size)
+    }
+    // Decouple connection's flow control from application's read.
+    // An update on connection's flow control should not depend on
+    // whether user application has read the data or not. Such a
+    // restriction is already imposed on the stream's flow control,
+    // and therefore the sender will be blocked anyways.
+    // Decoupling the connection flow control will prevent other
+    // active(fast) streams from starving in presence of slow or
+    // inactive streams.
+    if w := t.fc.onData(size); w > 0 {
+        t.controlBuf.put(&outgoingWindowUpdate{
+            streamID:  0,
+            increment: w,
+        })
+    }
+    if sendBDPPing {
+        // Avoid excessive ping detection (e.g. in an L7 proxy)
+        // by sending a window update prior to the BDP ping.
+        if w := t.fc.reset(); w > 0 {
+            t.controlBuf.put(&outgoingWindowUpdate{
+                streamID:  0,
+                increment: w,
+            })
+        }
+        t.controlBuf.put(bdpPing)
+    }
+    // Select the right stream to dispatch.
+    s, ok := t.getStream(f)
+    if !ok {  
+        return
+    }
+    if s.getState() == streamReadDone {
+        t.closeStream(s, true, http2.ErrCodeStreamClosed, false)
+        return
+    }
+    if size > 0 {
+        if err := s.fc.onData(size); err != nil {
+            t.closeStream(s, true, http2.ErrCodeFlowControl, false)
+            return
+        }
+        if f.Header().Flags.Has(http2.FlagDataPadded) {
+            if w := s.fc.onRead(size - uint32(len(f.Data()))); w > 0 {
+                t.controlBuf.put(&outgoingWindowUpdate{s.id, w})
+            }
+        }
+        // TODO(bradfitz, zhaoq): A copy is required here because there is no
+        // guarantee f.Data() is consumed before the arrival of next frame.
+        // Can this copy be eliminated?
+        if len(f.Data()) > 0 {
+            buffer := t.bufferPool.get()
+            buffer.Reset()
+            buffer.Write(f.Data())
+            s.write(recvMsg{buffer: buffer})
+        }
+    }
+    if f.Header().Flags.Has(http2.FlagDataEndStream) {
+        // Received the end of stream from the client.
+        s.compareAndSwapState(streamActive, streamReadDone)
+        s.write(recvMsg{err: io.EOF})
+    }
+}
+```
+```handleData()``` perform the following work:
+* connection flow control
+* forward the data frame to the selected ```Stream```
+
+The foward work started by:
+* copy the payload to ```buffer```,
+* build a ```recvMsg``` with the payload ```buffer```,
+* call ```s.write()```, which will call ```s.buf.put()```,
+* in ```*recvBuffer.put()```, the payload ```recvMsg``` will be sent to the ```recvBuffer.c```.
+
+In conclusion: ```st.HandleStreams()``` will send the request parameter to the same channel ```chan recvMsg```. Which is a buffered channel belong to ```Stream.buf.c``` 
+```go
+func (t *http2Server) handleData(f *http2.DataFrame) {
+    size := f.Header().Length
+    var sendBDPPing bool
+    if t.bdpEst != nil {
+        sendBDPPing = t.bdpEst.add(size)
+    }
+    // Decouple connection's flow control from application's read.
+    // An update on connection's flow control should not depend on
+    // whether user application has read the data or not. Such a
+    // restriction is already imposed on the stream's flow control,
+    // and therefore the sender will be blocked anyways.
+    // Decoupling the connection flow control will prevent other
+    // active(fast) streams from starving in presence of slow or
+    // inactive streams.
+    if w := t.fc.onData(size); w > 0 {
+        t.controlBuf.put(&outgoingWindowUpdate{
+            streamID:  0,
+            increment: w,
+        })
+    }
+    if sendBDPPing {
+        // Avoid excessive ping detection (e.g. in an L7 proxy)
+        // by sending a window update prior to the BDP ping.
+        if w := t.fc.reset(); w > 0 {
+            t.controlBuf.put(&outgoingWindowUpdate{
+                streamID:  0,
+                increment: w,                                                                                                                      
+            })                                                                                                                                                     
+        }                                                                                                                                                   
+        t.controlBuf.put(bdpPing)                                                                                                                                   
+    }                                                                                                                                                             
+    // Select the right stream to dispatch.                                                                                                              
+    s, ok := t.getStream(f)                                                                                                                        
+    if !ok {                                                                                                                                           
+        return                                                                                                                                         
+    }
+    if s.getState() == streamReadDone {
+        t.closeStream(s, true, http2.ErrCodeStreamClosed, false)
+        return
+    }
+    if size > 0 {
+        if err := s.fc.onData(size); err != nil {
+            t.closeStream(s, true, http2.ErrCodeFlowControl, false)
+            return
+        }
+        if f.Header().Flags.Has(http2.FlagDataPadded) {
+            if w := s.fc.onRead(size - uint32(len(f.Data()))); w > 0 {
+                t.controlBuf.put(&outgoingWindowUpdate{s.id, w})
+            }
+        }
+        // TODO(bradfitz, zhaoq): A copy is required here because there is no
+        // guarantee f.Data() is consumed before the arrival of next frame.
+        // Can this copy be eliminated?
+        if len(f.Data()) > 0 {
+            buffer := t.bufferPool.get()
+            buffer.Reset()
+            buffer.Write(f.Data())
+            s.write(recvMsg{buffer: buffer})
+        }
+    }
+    if f.Header().Flags.Has(http2.FlagDataEndStream) {
+        // Received the end of stream from the client.
+        s.compareAndSwapState(streamActive, streamReadDone)
+        s.write(recvMsg{err: io.EOF})
+    }
+}
+
+func (s *Stream) write(m recvMsg) {                                          
+    s.buf.put(m)                                                           
+}                                      
+
+func (b *recvBuffer) put(r recvMsg) {                                        
+    b.mu.Lock()                                                            
+    if b.err != nil {                  
+        b.mu.Unlock()         
+        // An error had occurred earlier, don't accept more
+        // data or errors.                          
+        return                                           
+    }                                                     
+    b.err = r.err   
+    if len(b.backlog) == 0 {
+        select {                                      
+        case b.c <- r:                                
+            b.mu.Unlock()                                  
+            return                   
+        default:                                                                     
+        }                                                                       
+    }                                                                     
+    b.backlog = append(b.backlog, r)                            
+    b.mu.Unlock()                                                                                           
+}                                   
+```

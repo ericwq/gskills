@@ -20,7 +20,6 @@ My original goal is to understand the source code of [gRPC-go](https://github.co
 ### [Request parameters](parameters.md)
 * [The problem](parameters.md#the-problem)                                
 * [The clue](parameters.md#the-clue)                                
-* [Lock the method](parameters.md#lock-the-method)                                
 * [Trace it](parameters.md#trace-it)                                
 * [Message reader](parameters.md#message-reader)                                
 * [Message sender](parameters.md#message-sender)
