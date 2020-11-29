@@ -363,11 +363,11 @@ The value of ```p``` is assigned through the following statement:
 d, err := recvAndDecompress(&parser{r: stream}, stream, dc, s.opts.maxReceiveMessageSize, payInfo, decomp)
 ```
 The following call stack will happens: 
-* ```p.r.Read()``` calls ```Stream.Read()```,
+* ```p.r.Read()``` is defined by ```Stream.Read()```,
 * ```Stream.Read()``` calls ```s.requestRead()```, which calls ```t.adjustWindow()```, no data read, ignore it.
 * ```Stream.Read()``` calls ```io.ReadFull(s.trReader, p)```, which calls ```s.trReader.Read()```
 * ```s.trReader.Read()``` calls ``` t.reader.Read(p)```, 
-* ```t.reader.Read(p)``` calls ```recvBufferReader.Read()```,
+* ```t.reader.Read(p)``` is defined by ```recvBufferReader.Read()```,
 * ```recvBufferReader.Read()``` calls ```recvBufferReader.read()```,
 * ```recvBufferReader.read()``` read the ```recvMsg``` from channel ```m := <-r.recv.get()``` and calls ```recvBufferReader.readAdditional()``` to finish the read action.
 
@@ -510,7 +510,7 @@ func (r *recvBufferReader) readAdditional(m recvMsg, p []byte) (n int, err error
 }
 ```
 ## Message reader
-* ```r.recv``` is ```*recvBuffer```. It's ```get()``` method just return the ```<-chan recvMsg```. 
+* ```r.recv``` is ```*recvBuffer```. Its ```get()``` method just return the ```<-chan recvMsg```. 
 * ```r.recv``` is assigned by ```s.buf``` from the above code. 
 * ```s.buf``` is assigned by ```buf```, which is the return value of ```newRecvBuffer()```
 * ```newRecvBuffer()``` simple create and return a ```*recvBuffer```, the ```recvBuffer.c``` field is a buffered channel:```chan recvMsg``` 
@@ -579,6 +579,8 @@ func (t *http2Server) operateHeaders(frame *http2.MetaHeadersFrame, handle func(
 ## Message sender
 
 Let's back to the start point. In ```HandleStreams()```, ```t.framer.fr.ReadFrame()``` has already been checked. There is no sign of sending message to channel. The next reasonable method is ```t.handleData(frame)```.
+
+For convenience, All realated code is showned in one place.
 
 ```go
 func (t *http2Server) handleData(f *http2.DataFrame) {
@@ -652,10 +654,11 @@ func (t *http2Server) handleData(f *http2.DataFrame) {
 * connection flow control
 * forward the data frame to the selected ```Stream```
 
-The fowarding work started by:
+The fowarding work includes:
 * copy the payload to ```buffer```,
 * build a ```recvMsg``` with the payload ```buffer```,
-* call ```s.write()```, which will call ```s.buf.put()```,
+* call ```s.write()```, which calls ```s.buf.put()```,
+* ```s.buf.put()``` is defined by ```*recvBuffer.put()```,
 * in ```*recvBuffer.put()```, the payload ```recvMsg``` will be sent to the ```recvBuffer.c```.
 
 In conclusion: ```st.HandleStreams()``` will send the request parameter to the same channel ```chan recvMsg```. Which is a buffered channel belong to ```Stream.buf.c``` 
