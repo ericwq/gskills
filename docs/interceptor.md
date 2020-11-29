@@ -97,7 +97,7 @@ please note:
 * Inside the anonymous ```UnaryHandler```, it will call the next interceptor in the chain. That because the ```UnaryServerInterceptor``` and ```UnaryHandler``` share the same return type, otherwise we can't return the interceptor directly inside the ```UnaryHandler``` *shell*.
 
 Now the interceptor chain is ready . The execution flow is as following.
-![source code](images/images.002.png)
+![images.002.png](../images/images.002.png)
 
 1. start with interceptor[0] and getChainUnaryHandler(0). Before the preProcessing, getChainUnaryHandler(0) is called and return the handler wrapper.
 2. now run the preProcessing part of interceptor[0], 

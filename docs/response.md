@@ -189,7 +189,7 @@ type Server struct {
 
 The following diagram is the serve request sequence. It focus on the reply the response: mainly ***Response-Headers***, ***Length-Prefixed-Message*** and ***Trailers***.
 
-![images.004.png](images/images.004.png)
+![images.004.png](../images/images.004.png)
 
 Now everything is ready. Let's serve the gRPC request. ```Serve(``` need to be called from your application code. It will be the main goroutine to serve request. 
 
