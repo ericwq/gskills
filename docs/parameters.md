@@ -655,6 +655,7 @@ func (t *http2Server) handleData(f *http2.DataFrame) {
 * forward the data frame to the selected ```Stream```
 
 The fowarding work includes:
+* select the right stream to dispatch: ```s, ok := t.getStream(f)```
 * copy the payload to ```buffer```,
 * build a ```recvMsg``` with the payload ```buffer```,
 * call ```s.write()```, which calls ```s.buf.put()```,
