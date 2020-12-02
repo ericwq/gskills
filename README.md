@@ -30,7 +30,7 @@ Get a quick glimpse from the following diagram. See  [The bigger picture](docs/c
 * [Message reader](docs/parameters.md#message-reader)                                
 * [Message sender](docs/parameters.md#message-sender)
 
-### [controlBuffer and loopy](docs/control.md)
+### [controlBuffer, loopyWriter and Framer](docs/control.md)
 * [The bigger picture](docs/control.md#the-bigger-picture)                                
 * [controlBuffer](docs/control.md#controlbuffer)                                
 * [loopyWriter](docs/control.md#loopwriter)                                
