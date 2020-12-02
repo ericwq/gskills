@@ -50,13 +50,13 @@ To better understand the diagram, I added the following explaination:
   * ```*controlBuffer``` is thread safe.
   * ```*controlBuffer``` is a buffer, it will hold the message temporally until ```t.loopy``` get it.
   * See [controlBuffer](#controlbuffer) for detail.
-* ```t.loopy``` goroutine ```get()``` response from  ```t.controlBuf```, 
-  * ```t.loopy``` will encode the response and send the it back through ```t.framer.fr```, 
-  * ```WriteXXX()``` is provided by ```t.framer.fr```
+* ```t.loopy``` goroutine get response from ```t.controlBuf``` and send it back via ```t.framer.fr``` 
+  * via ```get()``` provided by ```t.controlBuf```, ```t.loopy``` read respnse from  ```t.controlBuf``` ,
+  * via ```WriteXXX()``` provided by ```t.framer.fr```, ```t.loopy``` encode the response and send it back to client ,
   * See [loopWriter](#loopwriter) for detail.
-* ```t.framer.fr``` is of type ```*http2.Framer```.
+* ```t.framer.fr``` is in charge of read/write http 2 frames from/to the wire.
   * it's get initilized when the connection is created.
-  * ```Framer``` is in charge of read/write http 2 frames from/to the wire.
+  * ```Framer``` is of type ```*http2.Framer```. 
   * See [Frame](#frame) for detail.
 
 
