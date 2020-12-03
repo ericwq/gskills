@@ -33,7 +33,10 @@ Get a quick glimpse from the following diagram. See  [The bigger picture](docs/c
 ### [controlBuffer, loopyWriter and Framer](docs/control.md)
 * [The bigger picture](docs/control.md#the-bigger-picture)                                
 * [controlBuffer](docs/control.md#controlbuffer)                                
-* [loopyWriter](docs/control.md#loopwriter)                                
+  * [Component](docs/control.md#component)
+  * [Get and Put](docs/control.md#get-and-put)
+  * [Threshold](docs/control.md#threshold)
+* [loopyWriter](docs/control.md#loopywriter)                                
 * [Framer](docs/control.md#framer)                                
 
 ### [Interceptor](docs/interceptor.md)

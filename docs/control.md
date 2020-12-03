@@ -1,7 +1,10 @@
 # controlBuffer, loopyWriter and Framer
 * [The bigger picture](#the-bigger-picture)
 * [controlBuffer](#controlbuffer)
-* [loopyWriter](#loopwriter)
+  * [Component](#component)
+  * [Get and Put](#get-and-put)
+  * [Threshold](#threshold)
+* [loopyWriter](#loopywriter)
 * [Framer](#framer)
 
 In [Reply with Response](response.md) and [Send Request](request.md), we mentioned ```t.controlBuffer``` several times. How does it works? It's not easy to answer that question. I found that we need the bigger picture to describe the process of gRPC call reply. Without the bigger picture it's hard to understand ```t.controlBuffer```'s responsibility, the role it plays and the relationship with other parts. Without it it's hard to answer the question correctly. 
@@ -385,8 +388,222 @@ func newFramer(conn net.Conn, writeBufferSize, readBufferSize int, maxHeaderList
 }                                             
 ```
 ## controlBuffer
+From the bigger picture, the ```controlBuffer``` is the buffer when you wan to send message to ```loopy```. Specifically speaking the buffer is the ```list *itemList```. ```controlBuffer``` can be initilized by ```newControlBuffer()```. 
 
-consider add a diagram
+### Component
+* ```mu sync.Mutex``` is used to protect the ```list *itemList```
+* ```list *itemList``` is a normal linked list. It's the buffer to temporally store the message.
+* ```ch chan struct{}``` and ```consumerWaiting bool``` is used for the bloking read mode. see [Get and Put](#get-and-put) for detail.
+* ```done <-chan struct{}``` is used for the stop operation.
+* ```transportResponseFrames int``` and ```trfChan atomic.Value``` is used for threshold. see [Threshold](#threshold) for detail.
+* ```atomic.Value``` provides an atomic load and store of a consistently typed value. see [official doc](https://golang.org/pkg/sync/atomic/#Value) for detail.
+
+```go
+// controlBuffer is a way to pass information to loopy.                                                                    
+// Information is passed as specific struct types called control frames.                                                                           
+// A control frame not only represents data, messages or headers to be sent out                                                        
+// but can also be used to instruct loopy to update its internal state.                                                                  
+// It shouldn't be confused with an HTTP2 frame, although some of the control frames                                                                 
+// like dataFrame and headerFrame do go out on wire as HTTP2 frames.                                                                       
+type controlBuffer struct {                                                                                                               
+    ch              chan struct{}                                                                                                              
+    done            <-chan struct{}                                                                                                           
+    mu              sync.Mutex                                                                                                                              
+    consumerWaiting bool                                                                                                                             
+    list            *itemList                                                                                                           
+    err             error                                                                                                 
+                                                                                                                          
+    // transportResponseFrames counts the number of queued items that represent                                                        
+    // the response of an action initiated by the peer.  trfChan is created                                               
+    // when transportResponseFrames >= maxQueuedTransportResponseFrames and is                                                                       
+    // closed and nilled when transportResponseFrames drops below the                                                                    
+    // threshold.  Both fields are protected by mu.                                                                                       
+    transportResponseFrames int                                                                                           
+    trfChan                 atomic.Value // *chan struct{}                                                                 
+}                                                                                                                                              
+                                                                                                                                       
+func newControlBuffer(done <-chan struct{}) *controlBuffer {                                                                             
+    return &controlBuffer{                                                                                                                     
+        ch:   make(chan struct{}, 1),                                                                                                    
+        list: &itemList{},                                                                                                                         
+        done: done,                                                                                                                             
+    }
+}
+
+type itemNode struct {
+    it   interface{}
+    next *itemNode
+}                                                                                                                         
+                                                                                                                          
+type itemList struct {                                                                                                                 
+    head *itemNode                                                                                                        
+    tail *itemNode                                                                                                                                   
+}                                                                                                                                        
+                                                                                                                                          
+func (il *itemList) enqueue(i interface{}) {                                                                              
+    n := &itemNode{it: i}                                                                                                  
+    if il.tail == nil {                                                                                                                        
+        il.head, il.tail = n, n                                                                                                        
+        return                                                                                                                           
+    }                                                                                                                                          
+    il.tail.next = n                                                                                                                     
+    il.tail = n                                                                                                                                    
+}                                                                                                                                               
+     
+// peek returns the first item in the list without removing it from the
+// list.
+func (il *itemList) peek() interface{} {                                       
+    return il.head.it
+}                                   
+                                              
+func (il *itemList) dequeue() interface{} {
+    if il.head == nil {
+        return nil
+    }
+    i := il.head.it
+    il.head = il.head.next
+    if il.head == nil {
+        il.tail = nil
+    }
+    return i
+}
+```
+
+### Get and Put
+Under the protection of ```mu```, ```put()``` and ```executeAndPut()``` store the item in buffer ```c.list```.
+* counts ```c.transportResponseFrames```, if the buffer size exceed ```maxQueuedTransportResponseFrames```, create a throttling channel, 
+* compare with ```put()```, ```executeAndPut()``` add a extra step: try to execute the ```f func(it interface{}) bool``` before the put action,
+* if ```c.consumerWaiting``` is true,  send the the signal (```struct{}{}```) to ```c.ch```, to wake up the get operation. After that the blocked read operation can continue now.
+
+Also under the protection of ```mu```, ```get()``` fetch the item from buffer ```c.list```.
+* count down ```c.transportResponseFrames```, if the buffer size less than ```maxQueuedTransportResponseFrames```, close the throttling channel,
+* if run in blocking mode, ```block``` parameter is true, if the buffer is empty, ```get()``` will wait signal from ```c.ch```, until ```put()``` send the signal.
+
+In general, ```*controlBuffer``` is thread safe. 
+
+```go
+// maxQueuedTransportResponseFrames is the most queued "transport response"
+// frames we will buffer before preventing new reads from occurring on the
+// transport.  These are control frames sent in response to client requests,
+// such as RST_STREAM due to bad headers or settings acks.
+const maxQueuedTransportResponseFrames = 50
+ 
+type cbItem interface {
+    isTransportResponseFrame() bool                                                          
+}                  
+
+func (c *controlBuffer) put(it cbItem) error {
+    _, err := c.executeAndPut(nil, it)
+    return err
+}
+
+func (c *controlBuffer) executeAndPut(f func(it interface{}) bool, it cbItem) (bool, error) {
+    var wakeUp bool
+    c.mu.Lock()
+    if c.err != nil {
+        c.mu.Unlock()
+        return false, c.err
+    }
+    if f != nil {
+        if !f(it) { // f wasn't successful
+            c.mu.Unlock()
+            return false, nil
+        }
+    }
+    if c.consumerWaiting {
+        wakeUp = true
+        c.consumerWaiting = false
+    }
+    c.list.enqueue(it)
+    if it.isTransportResponseFrame() {
+        c.transportResponseFrames++
+        if c.transportResponseFrames == maxQueuedTransportResponseFrames {
+            // We are adding the frame that puts us over the threshold; create
+            // a throttling channel.
+            ch := make(chan struct{})
+            c.trfChan.Store(&ch)
+        }
+    }
+    c.mu.Unlock()
+    if wakeUp {
+        select {
+        case c.ch <- struct{}{}:
+        default:
+        }
+    }
+    return true, nil
+}
+ 
+func (c *controlBuffer) get(block bool) (interface{}, error) {                                                                                                  
+    for {                                                                                                                                            
+        c.mu.Lock()                                                                                                                                            
+        if c.err != nil {                                                                                                                  
+            c.mu.Unlock()                                                                                                                        
+            return nil, c.err                                                                                                                      
+        }                                                                                                                                                   
+        if !c.list.isEmpty() {                                                                                                                                  
+            h := c.list.dequeue().(cbItem)                                                                                                        
+            if h.isTransportResponseFrame() {                                                                             
+                if c.transportResponseFrames == maxQueuedTransportResponseFrames {                                        
+                    // We are removing the frame that put us over the                                                                          
+                    // threshold; close and clear the throttling channel.                                                 
+                    ch := c.trfChan.Load().(*chan struct{})                                                                                          
+                    close(*ch)                                                                                                                        
+                    c.trfChan.Store((*chan struct{})(nil))                                                                                             
+                }                                                                                                         
+                c.transportResponseFrames--                                                                                                                     
+            }                                                                                                                                      
+            c.mu.Unlock()                                                                                                                          
+            return h, nil                                                                                                                     
+        }                                                                                                                                      
+        if !block {                                                                                                                                  
+            c.mu.Unlock()                                                                                                                          
+            return nil, nil                                                                                                                     
+        }                                                                                                                                        
+        c.consumerWaiting = true                                                                                                                                
+        c.mu.Unlock()                                                                                                                                        
+        select {                                                                                                                                     
+        case <-c.ch:                                                                                                                                
+        case <-c.done:                                                                                                                         
+            c.finish()                                                                                                                                            
+            return nil, ErrConnClosing                                                                                                           
+        }                                                                                                                                          
+    }                                                                                                                                                
+}
+
+// Note argument f should never be nil.
+func (c *controlBuffer) execute(f func(it interface{}) bool, it interface{}) (bool, error) {
+    c.mu.Lock()
+    if c.err != nil {
+        c.mu.Unlock()
+        return false, c.err
+    }
+    if !f(it) { // f wasn't successful
+        c.mu.Unlock()
+        return false, nil
+    }
+    c.mu.Unlock()
+    return true, nil
+}
+``` 
+
+### Threshold
+
+User of ```controlBuffer``` need to explicitly call ```throttle()``` to make the threshold control work. if ```c.trfChan``` is not nil, ```throttle()``` will wait, until the threshhold released. 
+
+```go
+// throttle blocks if there are too many incomingSettings/cleanupStreams in the
+// controlbuf.
+func (c *controlBuffer) throttle() {
+    ch, _ := c.trfChan.Load().(*chan struct{})
+    if ch != nil {
+        select {
+        case <-*ch:
+        case <-c.done:
+        }
+    }
+}
+```
 
 ## loopyWriter
 
