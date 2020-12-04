@@ -5,7 +5,7 @@
   * [Get and Put](#get-and-put)
   * [Threshold](#threshold)
 * [loopyWriter](#loopywriter)
-* [Framer](#framer)
+* [framer](#framer)
 
 In [Reply with Response](response.md) and [Send Request](request.md), we mentioned ```t.controlBuffer``` several times. How does it works? It's not easy to answer that question. I found that we need the bigger picture to describe the process of gRPC call reply. Without the bigger picture it's hard to understand ```t.controlBuffer```'s responsibility, the role it plays and the relationship with other parts. Without it it's hard to answer the question correctly. 
 
@@ -609,4 +609,102 @@ func (c *controlBuffer) throttle() {
 
 still need some time.
 
-## Framer
+## framer
+```framer``` is a struct. ```newFramer``` builds a ```*framer``` object. I think it decorates the ```http2.NewFramer()``` by add read/write buffer capability. 
+
+From the function body of ```newFramer``` you can understand what it is:
+* use ```bufio.NewReaderSize()``` and ```conn``` to build a ```r``` object, thus add the buffer capability to ```conn```,
+* use ```newBufWriter()``` and ```conn``` to build a ```w``` object, thus add the buffer capability to ```conn```,
+* ```*bufWriter``` is a simple buffer writer, it implements ```io.Writer``` interface. with addtional ```Flush()``` method,
+* ```fr``` is initilized by ```http2.NewFramer()```, using the just created ```w``` and ```r```, which means ```fr``` is using the bufferd ```Reader``` and ```Writer```
+* actually, the most functionality of ```framer``` is provided by ```http2.Framer```. It provides a lot of method to read/write frame data. Such as ```WriteHeaders()```, ```WriteData()```, ```ReadFrame()``` etc.
+* we will not discuss the implementation of ```http2.NewFramer()```, it's out of our scope. see [offical document](https://pkg.go.dev/golang.org/x/net/http2) for more detail.
+
+The only limitation of ```framer``` is the user need to call ```framer.writer.Flush()``` to clean the writer buffer. 
+
+There are two questions confuse me:
+* ```http2.NewFramer()``` already has the read buffer ```readBuf  []byte``` , why use ```bufio.Reader```? 
+* ```http2.NewFramer()``` also has the write buffer ```wbuf []byte```, why use ```bufWriter```?
+
+Anyway, the buffered ```w``` and ```r``` are still working. That's the most important.
+
+```go
+type framer struct {                                                                                                                                  
+    writer *bufWriter                                                                                                                                 
+    fr     *http2.Framer                                                                                                                        
+}                                                                                                                                             
+                                                                                                                                              
+func newFramer(conn net.Conn, writeBufferSize, readBufferSize int, maxHeaderListSize uint32) *framer {                                          
+    if writeBufferSize < 0 {                                                                                                                
+        writeBufferSize = 0                                                                                                                               
+    }                                                                                                                                         
+    var r io.Reader = conn                                                                                                                         
+    if readBufferSize > 0 {                                                                                                                         
+        r = bufio.NewReaderSize(r, readBufferSize)                                                                                               
+    }                                                                                                                                             
+    w := newBufWriter(conn, writeBufferSize)                                                                                                             
+    f := &framer{                                                                                                                                     
+        writer: w,                                                                                                                              
+        fr:     http2.NewFramer(w, r),                                                                                     
+    }                                                                                                                                           
+    f.fr.SetMaxReadFrameSize(http2MaxFrameLen)                                                                             
+    // Opt-in to Frame reuse API on framer to reduce garbage.                                                                         
+    // Frames aren't safe to read from after a subsequent call to ReadFrame.                                              
+    f.fr.SetReuseFrames()                                                                                                 
+    f.fr.MaxHeaderListSize = maxHeaderListSize                                                                            
+    f.fr.ReadMetaHeaders = hpack.NewDecoder(http2InitHeaderTableSize, nil)                                                                                         
+    return f                                                                                                              
+}                                                                                                                                                                
+
+type bufWriter struct {
+    buf       []byte
+    offset    int     
+    batchSize int  
+    conn      net.Conn
+    err       error
+                                                            
+    onFlush func()                           
+}                                                           
+                             
+func newBufWriter(conn net.Conn, batchSize int) *bufWriter {
+    return &bufWriter{       
+        buf:       make([]byte, batchSize*2),
+        batchSize: batchSize,
+        conn:      conn,                                
+    }                  
+}                                                       
+                     
+func (w *bufWriter) Write(b []byte) (n int, err error) {
+    if w.err != nil {         
+        return 0, w.err                               
+    }                         
+    if w.batchSize == 0 { // Buffer has been disabled.
+        return w.conn.Write(b)
+    }                                  
+    for len(b) > 0 {
+        nn := copy(w.buf[w.offset:], b)
+        b = b[nn:]         
+        w.offset += nn              
+        n += nn            
+        if w.offset >= w.batchSize {
+            err = w.Flush()        
+        }            
+    }                              
+    return n, err
+}
+
+func (w *bufWriter) Flush() error {
+    if w.err != nil {
+        return w.err
+    }
+    if w.offset == 0 {
+        return nil
+    }
+    if w.onFlush != nil {
+        w.onFlush()
+    }
+    _, w.err = w.conn.Write(w.buf[:w.offset])
+    w.offset = 0
+    return w.err
+}
+```

@@ -37,7 +37,7 @@ Get a quick glimpse from the following diagram. See  [The bigger picture](docs/c
   * [Get and Put](docs/control.md#get-and-put)
   * [Threshold](docs/control.md#threshold)
 * [loopyWriter](docs/control.md#loopywriter)                                
-* [Framer](docs/control.md#framer)                                
+* [framer](docs/control.md#framer)                                
 
 ### [Interceptor](docs/interceptor.md)
 * [Interceptor chain execution flow](docs/interceptor.md#interceptor-chain-execution-flow)   
