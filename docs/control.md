@@ -1,4 +1,4 @@
-# controlBuffer, loopyWriter and Framer
+# controlBuffer, loopyWriter and framer
 * [The bigger picture](#the-bigger-picture)
 * [controlBuffer](#controlbuffer)
   * [Component](#component)
@@ -591,6 +591,8 @@ func (c *controlBuffer) execute(f func(it interface{}) bool, it interface{}) (bo
 
 User of ```controlBuffer``` need to explicitly call ```throttle()``` to make the threshold control work. if ```c.trfChan``` is not nil, ```throttle()``` will wait, until the threshhold released. 
 
+Here we show some code snippet from ```HandleStreams()```. It's the typical use case for ```t.controlBuf.throttle() ```.
+
 ```go
 // throttle blocks if there are too many incomingSettings/cleanupStreams in the
 // controlbuf.
@@ -603,6 +605,21 @@ func (c *controlBuffer) throttle() {
         }
     }
 }
+
+// HandleStreams receives incoming streams using the given handler. This is                                                                    
+// typically run in a separate goroutine.                                                                                                   
+// traceCtx attaches trace to ctx and returns the new context.                                                                                
+func (t *http2Server) HandleStreams(handle func(*Stream), traceCtx func(context.Context, string) context.Context) {                           
+    defer close(t.readerDone)                                                                                                                                 
+    for {                                                                                                                                              
+        t.controlBuf.throttle()                                                                                                                                
+        frame, err := t.framer.fr.ReadFrame()                                                                                                                
+        atomic.StoreInt64(&t.lastRead, time.Now().UnixNano())                                                                                       
+    ...
+    }
+    ...
+}
+
 ```
 
 ## loopyWriter
