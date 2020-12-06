@@ -2,7 +2,7 @@
 
 My original goal is to understand the source code of [gRPC-go](https://github.com/grpc/grpc-go). When researching the source code, I found a lots of coding skills/design which deserved to be noted for later reference. 
 
-Gradually, As more chapter finished, it tbecomes "Understanding gRPC-go".  All content are golang and gRPC-go related. 
+Gradually, As more chapter finished, it becomes "Understanding gRPC-go". All content are golang and gRPC-go related. 
 
 Get a quick glimpse from the following diagram. See  [The bigger picture](docs/control.md#the-bigger-picture) for detail.
 ![images.005](images/images.005.png)

@@ -187,7 +187,7 @@ type Server struct {
 
 ## Serve request
 
-The following diagram is the serve request sequence. It focus on the reply the response: mainly ***Response-Headers***, ***Length-Prefixed-Message*** and ***Trailers***.
+The following diagram is the serve request sequence. It focus on the response: mainly ***Response-Headers***, ***Length-Prefixed-Message*** and ***Trailers***.
 
 ![images.004.png](../images/images.004.png)
 

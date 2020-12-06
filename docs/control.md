@@ -633,7 +633,7 @@ In ```*controlBuffer``` frames just stored in a buffer list, while in ```loopyWr
 * ```framer``` is the ```*framer```, which is used to send data back to client. see [framer](#framer) for more detail.
 * ```estdStreams``` is map of all established streams that are not cleaned-up yet. see bellow for detail.
 * ```activeStreams``` is a linked-list of all streams that have data to send and some stream-level flow control quota. see bellow for detail.
-* ```outStream``` and ```outStreamList``` are normal data structure for streams.
+* ```outStream``` and ```outStreamList``` are normal data structure for streams grouping.
 * the above fields are the focus of our discussion. others are not touched.
 * ```side``` is used to identify loopy is run in client mode or server mode.
 * ```sendQuota``` and ```oiws``` and ```bdpEst``` are used for flow control (stream-level and connection-level).
@@ -780,7 +780,24 @@ func (l *outStreamList) dequeue() *outStream {
 ```
 
 ### handle 
-handle logic
+
+```handle``` is a frame classifier. Every individual frame is processed by type. Let's discuss the processing of some important frame type. We will discuss 
+
+* ```registerStream```, ```cleanupStream```, ```headerFrame``` - these frame type are related with ```estdStreams```, 
+* ```dataFrame```, ```incomingSettings``` and ```incomingWindowUpdate``` - these frame type are related with ```activeStreams```,
+
+Other frame type is not our focus. We will not touch them. Let's begin: 
+
+* ```registerStream```:
+  * this is a special frame used for ```loopyWriter``` internal state.
+  * ```l.registerStreamHandler()``` create an ```outStream``` object and add it to ```l.estdStreams```.
+  * that means ```l.registerStreamHandler()``` register this stream in ```l.estdStreams```. It's ready for process the upcomming stream frames.
+* ```cleanupStream```:
+  * this is a special frame used for ```loopyWriter``` internal state. 
+  * ```l.cleanupStreamHandler()``` remove and delete the spcified stream from ```l.estdStreams```.
+  * if needed it also writes a RST_STREAM frame to the client by call ```l.framer.fr.WriteRSTStream()````.
+
+there is still more frame type discussion, see bellow.
 
 ```go
 func (l *loopyWriter) handle(i interface{}) error {                                                                       
@@ -845,6 +862,21 @@ func (l *loopyWriter) cleanupStreamHandler(c *cleanupStream) error {
     return nil       
 }                                                              
 
+```
+* ```headerFrame```:
+  * this is the response header frame. Here we only discuss the server side behavior.
+  * ```l.headerHandler()``` find the stream form ```l.estdStreams``` by stream ID.
+  * if it's the first response header frame, call ```l.writeHeader()``` to write the frame back to client.  
+    * ```l.writeHeader()``` will write HTTP header frame and continuation frames to meet the HTTP frame size limitation. 
+    * ```l.writeHeader()``` uses ```l.hBuf```, ```l.hEnc``` to perform HPACK encoding.
+    * ```l.writeHeader()``` uses ```l.framer.fr.WriteHeaders()``` and ```l.framer.fr.WriteContinuation()``` to write frames.
+  * if it's the trailer frame and stream state is not empty, ```l.headerHandler()``` puts it in stream sending queue (```str.itl.enqueue(h)```).
+  * if the stream state is empty, ```l.headerHandler()``` call ```l.writeHeader()``` to write the frame back to client. 
+  * if the stream state is empty, call ```l.cleanupStreamHandler``` to clean the stream.
+
+there is still more type discussion, see bellow.
+
+```go
 func (l *loopyWriter) headerHandler(h *headerFrame) error {                                                                                                     
     if l.side == serverSide {                                                                                              
         str, ok := l.estdStreams[h.streamID]                                                                                                   
@@ -881,7 +913,33 @@ func (l *loopyWriter) headerHandler(h *headerFrame) error {
     return l.originateStream(str)
 }
 
+func (h *headerFrame) isTransportResponseFrame() bool {                                                                                                              
+        return h.cleanup != nil && h.cleanup.rst // Results in a RST_STREAM
+}                                                                                   
 
+// headerFrame is also used to register stream on the client-side.                                                
+type headerFrame struct {                                                         
+    streamID   uint32                                                                            
+    hf         []hpack.HeaderField             
+    endStream  bool               // Valid on server side.                                                                   
+    initStream func(uint32) error // Used only on the client side.                
+    onWrite    func()                                                                 
+    wq         *writeQuota    // write quota for the stream created.                 
+    cleanup    *cleanupStream // Valid on the server side.                                                                                          
+    onOrphaned func(error)    // Valid on client-side                 
+}                                                                                                             
+
+```
+
+* ```dataFrame```:
+  * this is the response data frame. 
+  * ```preprocessData()``` finds the stream from ```l.estdStreams```
+  * ```preprocessData()``` puts it in stream sending queue ```str.itl.enqueue(df)```. 
+  * if the stream state is ```empty```, change it to ```active``` and put the steram in the active stream queue ```l.activeStreams.enqueue(str)```
+
+there is still more type discussion, see bellow.
+
+```go
 func (l *loopyWriter) preprocessData(df *dataFrame) error {    
     str, ok := l.estdStreams[df.streamID]   
     if !ok {                                                                           
@@ -896,6 +954,132 @@ func (l *loopyWriter) preprocessData(df *dataFrame) error {
     }                      
     return nil                   
 }                                   
+
+type dataFrame struct {                                                                                                                                              
+        streamID  uint32                                          
+        endStream bool                                                         
+        h         []byte                     
+        d         []byte                                 
+        // onEachWrite is called every time                 
+        // a part of d is written out.                                                                          
+        onEachWrite func()                                                                           
+}
+
+func (*dataFrame) isTransportResponseFrame() bool { return false }                                                                                                   
+
+```
+* ```incomingSettings```:
+  * when gRPC receive the ```http2.SettingsFrame```, ```*http2Server.handleSettings()``` send the ```incomingSettings``` frame to ```t.controlBuf```
+  * upon receive ```incomingSettings```, ```incomingSettingsHandler()``` first apply the settings via call ```l.applySettings()```
+  * ```l.applySettings()``` will change the stream state to active, if the new limit is greater than current value.
+  * then ```incomingSettingsHandler()``` call ```l.framer.fr.WriteSettingsAck()``` to write an empty SETTINGS frame with the ACK bit set.
+
+there is still more type discussion, see bellow.
+
+```go
+func (l *loopyWriter) incomingSettingsHandler(s *incomingSettings) error {
+    if err := l.applySettings(s.ss); err != nil {                                                                         
+        return err                                                                                                        
+    }                                                                                                                     
+    return l.framer.fr.WriteSettingsAck()                                                                                 
+}                                                                                                                         
+
+func (t *http2Server) handleSettings(f *http2.SettingsFrame) {
+    if f.IsAck() {
+        return                                    
+    }                                         
+    var ss []http2.Setting                    
+    var updateFuncs []func()                      
+    f.ForeachSetting(func(s http2.Setting) error {
+        switch s.ID {                         
+        case http2.SettingMaxHeaderListSize:          
+            updateFuncs = append(updateFuncs, func() {
+                t.maxSendHeaderListSize = new(uint32)
+                *t.maxSendHeaderListSize = s.Val
+            })                                      
+        default:                              
+            ss = append(ss, s)                           
+        }                                             
+        return nil                               
+    })                                                 
+    t.controlBuf.executeAndPut(func(interface{}) bool {
+        for _, f := range updateFuncs {                                                                                                           
+            f()                    
+        }                          
+        return true      
+    }, &incomingSettings{
+        ss: ss,                                       
+    })
+}
+
+type incomingSettings struct {                                                                                                                                       
+        ss []http2.Setting                               
+}                                                           
+
+func (*incomingSettings) isTransportResponseFrame() bool { return true } // Results in a settings ACK                          
+
+func (l *loopyWriter) applySettings(ss []http2.Setting) error {                   
+    for _, s := range ss {                                                                                                
+        switch s.ID {                                                                                                     
+        case http2.SettingInitialWindowSize:                                                                              
+            o := l.oiws                                                                                                   
+            l.oiws = s.Val                                                                                                
+            if o < l.oiws {                                                                                               
+                // If the new limit is greater make all depleted streams active.                                          
+                for _, stream := range l.estdStreams {                                                                                                     
+                    if stream.state == waitingOnStreamQuota {                                                             
+                        stream.state = active                                                                                                             
+                        l.activeStreams.enqueue(stream)                                                                   
+                    }                                                                                                                       
+                }                                                                                                         
+            }                                                                                                                                  
+        case http2.SettingHeaderTableSize:                                                                                
+            updateHeaderTblSize(l.hEnc, s.Val)                                                                                                              
+        }                                                                                                                                                      
+    }                                                                                                                                   
+    return nil                                                                                                                                                  
+}                                                                                                                                       
+```
+* ```incomingWindowUpdate```:
+  * when gRPC receive the ```http2.WindowUpdateFrame```, ```*http2Server.handleWindowUpdate()``` send the ```incomingWindowUpdate``` frame to ```t.controlBuf```
+  * upon receive ```incomingWindowUpdate```, if stream id is 0, then ```incomingWindowUpdateHandler()``` update the quota,
+  * otherwise ```incomingWindowUpdateHandler()``` find the stream and update the stream state. 
+
+Now you understand what does ```handle()``` do. Let's move our focus to active stream proccessing.
+
+```go
+func (l *loopyWriter) incomingWindowUpdateHandler(w *incomingWindowUpdate) error {
+    // Otherwise update the quota.                                                                                        
+    if w.streamID == 0 {                                                                                                  
+        l.sendQuota += w.increment                                                                                        
+        return nil                                                                                                        
+    }                                                                                                                     
+    // Find the stream and update it.                                                                                     
+    if str, ok := l.estdStreams[w.streamID]; ok {                                                                         
+        str.bytesOutStanding -= int(w.increment)                                                                                                           
+        if strQuota := int(l.oiws) - str.bytesOutStanding; strQuota > 0 && str.state == waitingOnStreamQuota {            
+            str.state = active                                                                                                                            
+            l.activeStreams.enqueue(str)                                                                                  
+            return nil                                                                                                                      
+        }                                                                                                                 
+    }                                                                                                                                          
+    return nil                                                                                                            
+}                                                                                                                                                           
+
+func (t *http2Server) handleWindowUpdate(f *http2.WindowUpdateFrame) {         
+        t.controlBuf.put(&incomingWindowUpdate{                                                                                                                      
+                streamID:  f.Header().StreamID,          
+                increment: f.Increment,                     
+        })                                                                                                      
+}                                                         
+
+type incomingWindowUpdate struct {                                                                                                                                   
+        streamID  uint32                                 
+        increment uint32                                    
+}                                                                                                               
+
+func (*incomingWindowUpdate) isTransportResponseFrame() bool { return false }      
+
 ```
 
 ### processData
@@ -1013,7 +1197,9 @@ func (l *loopyWriter) processData() (bool, error) {
 }
 ```
 ### run
+
 run logic
+
 ```go
 // run should be run in a separate goroutine.
 // It reads control frames from controlBuf and processes them by:
