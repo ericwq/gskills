@@ -37,6 +37,10 @@ Get a quick glimpse from the following diagram. See  [The bigger picture](docs/c
   * [Get and Put](docs/control.md#get-and-put)
   * [Threshold](docs/control.md#threshold)
 * [loopyWriter](docs/control.md#loopywriter)                                
+  * [Component](docs/control.md#component-1)
+  * [handle](docs/control.md#handle)
+  * [processData](docs/control.md#processdata)
+  * [run](docs/control.md#run)
 * [framer](docs/control.md#framer)                                
 
 ### [Interceptor](docs/interceptor.md)

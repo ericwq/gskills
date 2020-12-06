@@ -5,6 +5,10 @@
   * [Get and Put](#get-and-put)
   * [Threshold](#threshold)
 * [loopyWriter](#loopywriter)
+  * [Component](#component-1)
+  * [handle](#handle)
+  * [processData](#processdata)
+  * [run](#run)
 * [framer](#framer)
 
 In [Reply with Response](response.md) and [Send Request](request.md), we mentioned ```t.controlBuffer``` several times. How does it works? It's not easy to answer that question. I found that we need the bigger picture to describe the process of gRPC call reply. Without the bigger picture it's hard to understand ```t.controlBuffer```'s responsibility, the role it plays and the relationship with other parts. Without it it's hard to answer the question correctly. 
@@ -864,12 +868,13 @@ func (l *loopyWriter) cleanupStreamHandler(c *cleanupStream) error {
 
 ```
 * ```headerFrame```:
-  * this is the response header frame. Here we only discuss the server side behavior.
+  * this is the response header frame. ```*http2Server.writeHeaderLocked()``` can send the ```headerFrame``` to ``` t.controlBuf```
+  * in ```l.headerHandler()``` we only discuss the server side behavior to keep our focus.
   * ```l.headerHandler()``` find the stream form ```l.estdStreams``` by stream ID.
   * if it's the first response header frame, call ```l.writeHeader()``` to write the frame back to client.  
     * ```l.writeHeader()``` will write HTTP header frame and continuation frames to meet the HTTP frame size limitation. 
     * ```l.writeHeader()``` uses ```l.hBuf```, ```l.hEnc``` to perform HPACK encoding.
-    * ```l.writeHeader()``` uses ```l.framer.fr.WriteHeaders()``` and ```l.framer.fr.WriteContinuation()``` to write frames.
+    * ```l.writeHeader()``` uses ```l.framer.fr.WriteHeaders()``` and ```l.framer.fr.WriteContinuation()``` to write header and continuation frames.
   * if it's the trailer frame and stream state is not empty, ```l.headerHandler()``` puts it in stream sending queue (```str.itl.enqueue(h)```).
   * if the stream state is empty, ```l.headerHandler()``` call ```l.writeHeader()``` to write the frame back to client. 
   * if the stream state is empty, call ```l.cleanupStreamHandler``` to clean the stream.
@@ -913,6 +918,87 @@ func (l *loopyWriter) headerHandler(h *headerFrame) error {
     return l.originateStream(str)
 }
 
+func (l *loopyWriter) writeHeader(streamID uint32, endStream bool, hf []hpack.HeaderField, onWrite func()) error {
+    if onWrite != nil {
+        onWrite()
+    }
+    l.hBuf.Reset()
+    for _, f := range hf {
+        if err := l.hEnc.WriteField(f); err != nil {
+            if logger.V(logLevel) {
+                logger.Warningf("transport: loopyWriter.writeHeader encountered error while encoding headers: %v", err)
+            }
+        }
+    }
+    var (
+        err               error
+        endHeaders, first bool
+    )
+    first = true
+    for !endHeaders {
+        size := l.hBuf.Len()
+        if size > http2MaxFrameLen {
+            size = http2MaxFrameLen
+        } else {
+            endHeaders = true
+        }
+        if first {
+            first = false
+            err = l.framer.fr.WriteHeaders(http2.HeadersFrameParam{
+                StreamID:      streamID,
+                BlockFragment: l.hBuf.Next(size),
+                EndStream:     endStream,
+                EndHeaders:    endHeaders,
+            })
+        } else {
+            err = l.framer.fr.WriteContinuation(
+                streamID,
+                endHeaders,
+                l.hBuf.Next(size),
+            )
+        }
+        if err != nil {
+            return err
+        }
+    }
+    return nil
+}
+
+func (t *http2Server) writeHeaderLocked(s *Stream) error {                                                               
+    // TODO(mmukhi): Benchmark if the performance gets better if count the metadata and other header fields                                  
+    // first and create a slice of that exact size.                                                                                  
+    headerFields := make([]hpack.HeaderField, 0, 2) // at least :status, content-type will be there if none else.        
+    headerFields = append(headerFields, hpack.HeaderField{Name: ":status", Value: "200"})                                                               
+    headerFields = append(headerFields, hpack.HeaderField{Name: "content-type", Value: grpcutil.ContentType(s.contentSubtype)})            
+    if s.sendCompress != "" {                                                                                                                              
+        headerFields = append(headerFields, hpack.HeaderField{Name: "grpc-encoding", Value: s.sendCompress})
+    }
+    headerFields = appendHeaderFieldsFromMD(headerFields, s.header)
+    success, err := t.controlBuf.executeAndPut(t.checkForHeaderListSize, &headerFrame{                                                                         
+        streamID:  s.id,
+        hf:        headerFields,
+        endStream: false,
+        onWrite:   t.setResetPingStrikes,
+    })
+    if !success {                                                                                                                                       
+        if err != nil {
+            return err                                                                                                                                      
+        }                                                                                                                                                   
+        t.closeStream(s, true, http2.ErrCodeInternal, false)
+        return ErrHeaderListSizeLimitViolation
+    }
+    if t.stats != nil {                                                                                                                  
+        // Note: Headers are compressed with hpack after this call returns.
+        // No WireLength field is set here.
+        outHeader := &stats.OutHeader{                                                                                                             
+            Header:      s.header.Copy(),                                                                                                                
+            Compression: s.sendCompress,                                                                                                                       
+        }
+        t.stats.HandleRPC(s.Context(), outHeader)                                                                         
+    }                                                                                                                                
+    return nil
+}
+
 func (h *headerFrame) isTransportResponseFrame() bool {                                                                                                              
         return h.cleanup != nil && h.cleanup.rst // Results in a RST_STREAM
 }                                                                                   
@@ -928,13 +1014,13 @@ type headerFrame struct {
     cleanup    *cleanupStream // Valid on the server side.                                                                                          
     onOrphaned func(error)    // Valid on client-side                 
 }                                                                                                             
-
+  
 ```
 
 * ```dataFrame```:
-  * this is the response data frame. 
+  * this is the response data frame. ```*http2Server.Write()``` can send the ```dataFrame``` to ``` t.controlBuf```
   * ```preprocessData()``` finds the stream from ```l.estdStreams```
-  * ```preprocessData()``` puts it in stream sending queue ```str.itl.enqueue(df)```. 
+  * ```preprocessData()``` puts it in stream sending queue: ```str.itl.enqueue(df)```. 
   * if the stream state is ```empty```, change it to ```active``` and put the steram in the active stream queue ```l.activeStreams.enqueue(str)```
 
 there is still more type discussion, see bellow.
@@ -955,6 +1041,47 @@ func (l *loopyWriter) preprocessData(df *dataFrame) error {
     return nil                   
 }                                   
 
+// Write converts the data into HTTP2 data frame and sends it out. Non-nil error
+// is returns if it fails (e.g., framing error, transport error).
+func (t *http2Server) Write(s *Stream, hdr []byte, data []byte, opts *Options) error {
+    if !s.isHeaderSent() { // Headers haven't been written yet.
+        if err := t.WriteHeader(s, nil); err != nil {
+            if _, ok := err.(ConnectionError); ok {
+                return err                    
+            }               
+            // TODO(mmukhi, dfawley): Make sure this is the right code to return.
+            return status.Errorf(codes.Internal, "transport: %v", err)
+        }                                 
+    } else {                                
+        // Writing headers checks for this condition.
+        if s.getState() == streamDone {
+            // TODO(mmukhi, dfawley): Should the server write also return io.EOF?
+            s.cancel()                        
+            select {                   
+            case <-t.done:                    
+                return ErrConnClosing   
+            default:                      
+            }                                     
+            return ContextErr(s.ctx.Err())
+        }                     
+    }
+    df := &dataFrame{                              
+        streamID:    s.id,                                                                      
+        h:           hdr,                     
+        d:           data,
+        onEachWrite: t.setResetPingStrikes,                                      
+    }                                     
+    if err := s.wq.get(int32(len(hdr) + len(data))); err != nil {                                   
+        select {                                                                                     
+        case <-t.done:                           
+            return ErrConnClosing
+        default:
+        }
+        return ContextErr(s.ctx.Err())
+    }
+    return t.controlBuf.put(df)
+}
+
 type dataFrame struct {                                                                                                                                              
         streamID  uint32                                          
         endStream bool                                                         
@@ -966,8 +1093,8 @@ type dataFrame struct {
 }
 
 func (*dataFrame) isTransportResponseFrame() bool { return false }                                                                                                   
-
 ```
+
 * ```incomingSettings```:
   * when gRPC receive the ```http2.SettingsFrame```, ```*http2Server.handleSettings()``` send the ```incomingSettings``` frame to ```t.controlBuf```
   * upon receive ```incomingSettings```, ```incomingSettingsHandler()``` first apply the settings via call ```l.applySettings()```
@@ -1083,7 +1210,29 @@ func (*incomingWindowUpdate) isTransportResponseFrame() bool { return false }
 ```
 
 ### processData
-processData logic
+
+```processData()``` focus on the processing of ```activeStreams```. The comments for ```processData()``` is correct but a simple version. Let's show the full version
+* first check the connection level send quota, if quota is 0, nothing to do except return.
+* if the ```activeStreams``` is empty, means no active stream, then nothing to do except return.
+* ```l.activeStreams.dequeue()``` remove the first stream from  ```activeStreams``` and assign the stream to ```str```,
+* ```peek()``` the first ```dataItem``` (here use peek to avoid partial send case, in that case, we still need to send the ramains parts)
+* for empty data frame, ```len(dataItem.h) == 0 && len(dataItem.d) == 0``` is true
+  * use ```l.framer.fr.WriteData()``` to send the data back, then remove the empty data item from stream. in this case, ```peek()``` is useless.
+  * if the ```str.itl.isEmpty()``` is ture, set the ```str.state = empty```
+  * if the next ```peek()``` is trailers, call ```l.writeHeader()``` to send the trailer back. then call ```l.cleanupStreamHandler()``` to clear the stream,
+  * if ```str.itl.isEmpty()``` is false and next frame is not trailer, that means if there's still more data, puts ```str``` at the end of activeStreams. 
+* for non-empty data frame
+  * figure out the maximum size we can send. consider the stream-level flow control and connection-level flow control, compute the ```maxSize``` 
+  * compute how much of the header and data we can send. ```hSzie``` is the send header size, ```dSize``` is the data size, ```buf``` is the data we can send.
+  * call ```l.framer.fr.WriteData()``` to send ```buf[:size]``` data.
+  * compute the ```str.bytesOutStanding``` and ```l.sendQuota```, remove the sent part data: including ```dataItem.h``` and ```dataItem.d```
+  * if all the whole ```dataItem``` is sent, remove it via ```str.itl.dequeue() ```
+  * if the ```str.itl.isEmpty()``` is ture, set the ```str.state = empty``` 
+  * if the next ```peek()``` is trailers, call ```l.writeHeader()``` to send the trailer back. then call ```l.cleanupStreamHandler()``` to clear the stream, 
+  * if run out of stream quota ``` int(l.oiws)-str.bytesOutStanding <= 0``` , then set set stream state to ```waitingOnStreamQuota```
+  * otherwise add the ```str``` back to the list of active streams ```l.activeStreams.enqueue(str)```
+
+Let's see the comments of ```processData()```. Now you can fully understand what it means.
 
 ```go
 // processData removes the first stream from active streams, writes out at most 16KB                                                                              
@@ -1198,7 +1347,18 @@ func (l *loopyWriter) processData() (bool, error) {
 ```
 ### run
 
-run logic
+Now we have discussed the features of [handle](#handle) and [processData](#processdata). It's time to put them together. ```run()``` is the core of ```loopyWriter``` goroutine. The comment is good enough to understand it. There are several things deserved to mention. It can help you to fully understand ```run()```
+* for block read ```get(true)``` and non-block read ```get(false)```, plesse refer to [Get and Put](#get-and-put)
+* in [handle](#handle), we mentioned that ```dataFrame```, ```incomingSettings``` and ```incomingWindowUpdate``` are related with active streams. 
+  * That is why we introduce these control frames, please see them again to known how to add/remove the active stream list.
+  * please note [processData](#processdata) itself also changed active stream list
+* the return value of ```processData()```, if ```isEmpty``` is ture, means ```processdata()``` do nothing to the active stream.
+  * we already cover it in [processData](#processdata)
+* ```loopyWriter``` share its life with ```controlBuf``` and ```http2Server```, 
+  * both of them share the same ```done``` channel. see [Code snippet 02](#code-snippet-03) ```newHTTP2Server()``` for done channel initilization,   
+  * when receive signal from ```done``` channel, block read ```get(true)``` will stop and return ```ErrConnClosing```, see [Get and Put](#get-and-put) for detail. 
+  * after receive the ```ErrConnClosing```, ```run()``` stops.
+  * plase note the difference between ```break hasdata``` and ```continue hasdata```.
 
 ```go
 // run should be run in a separate goroutine.
