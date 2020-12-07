@@ -1347,13 +1347,13 @@ func (l *loopyWriter) processData() (bool, error) {
 ```
 ### run
 
-Now we have discussed the features of [handle](#handle) and [processData](#processdata). It's time to put them together. ```run()``` is the core of ```loopyWriter``` goroutine. The comment is good enough to understand it. There are several things deserved to mention. It can help you to fully understand ```run()```
+Now we have discussed the features of [handle](#handle) and [processData](#processdata). It's time to put them together. ```run()``` is the core of ```loopyWriter``` goroutine. The following code comment is good enough to understand. There are several things deserved to mention. It can help you to fully understand ```run()```
 * for block read ```get(true)``` and non-block read ```get(false)```, plesse refer to [Get and Put](#get-and-put)
 * in [handle](#handle), we mentioned that ```dataFrame```, ```incomingSettings``` and ```incomingWindowUpdate``` are related with active streams. 
-  * That is why we introduce these control frames, please see them again to known how to add/remove the active stream list.
+  * that is why we introduce these control frames, please see them again to known how to change the active stream list.
   * please note [processData](#processdata) itself also changed active stream list
 * the return value of ```processData()```, if ```isEmpty``` is ture, means ```processdata()``` do nothing to the active stream.
-  * we already cover it in [processData](#processdata)
+  * we already cover it in the head of [processData](#processdata)
 * ```loopyWriter``` share its life with ```controlBuf``` and ```http2Server```, 
   * both of them share the same ```done``` channel. see [Code snippet 02](#code-snippet-03) ```newHTTP2Server()``` for done channel initilization,   
   * when receive signal from ```done``` channel, block read ```get(true)``` will stop and return ```ErrConnClosing```, see [Get and Put](#get-and-put) for detail. 
