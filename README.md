@@ -26,7 +26,7 @@ Get a quick glimpse from the following diagram. See  [The bigger picture](docs/c
 ### [Request parameters](docs/parameters.md)
 * [The problem](docs/parameters.md#the-problem)                                
 * [The clue](docs/parameters.md#the-clue)                                
-* [Trace it](docs/parameters.md#trace-it)                                
+* [Lock the method](docs/parameters.md#lock-the-method)
 * [Message reader](docs/parameters.md#message-reader)                                
 * [Message sender](docs/parameters.md#message-sender)
 
