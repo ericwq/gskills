@@ -5,7 +5,7 @@
 * [Message reader](#message-reader)
 * [Message sender](#message-sender)
 
-At [Serve stream](response.md#serve-stream), there is a problem we didn't discuss the detail. In one word, How does the server read the request parameter?
+At [Serve stream](response.md#serve-stream), there is a problem we didn't discuss in detail. In one word, how does the server read the request parameter?
 
 ## The problem
 According to the [gRPC over HTTP2](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md). The request is composed by the following parts.
@@ -18,11 +18,40 @@ Let's describe the probelm in detail. In [Serve stream](response.md#serve-stream
 * ```st.HandleStreams()``` will read the frame from the wire continuesly
 * ```s.handleStream()``` also need to read the request parameter.
 
-Now you has the same problem as I had: How does the two goroutine communicate with each other?
+Now you may notice the problem : If two goroutines want to read from the same connection, only one goroutine can read the data. So, how does the two goroutine communicate with each other?
+
+* in ```handleRawConn()```, it starts the ```s.serveStreams(st)``` goroutine.
+* in ```serveStreams()```, it starts the ```handleStream()``` goroutine.
+* in ```handleStream()```, it need to get the request parameter from the http data frame.
 
 ```go
+// handleRawConn forks a goroutine to handle a just-accepted connection that                                                                      
+// has not had any I/O performed on it yet.                                                                                                            
+func (s *Server) handleRawConn(rawConn net.Conn) {                                                                                                       
+    if s.quit.HasFired() {                                                                                                                     
+        rawConn.Close()                                                                                                                                    
+        return                                                                                                                
+    }                                                                                                  
+    
+    ...
+
+    // Finish handshaking (HTTP2)                                                                                                                     
+    st := s.newHTTP2Transport(conn, authInfo)
+    if st == nil {
+        return
+    }
+
+    rawConn.SetDeadline(time.Time{})
+    if !s.addConn(st) {
+        return
+    }
+    go func() {                                                                                                                                       
+        s.serveStreams(st)
+        s.removeConn(st)
+    }()                                                                                                                                       
+}
+
 func (s *Server) serveStreams(st transport.ServerTransport) {                                                                                                     
-    defer st.Close()                                                                                                                       
     var wg sync.WaitGroup                                                                                                  
                                                                                                                                               
     var roundRobinCounter uint32                                                                                           
@@ -157,13 +186,18 @@ func (s *Server) handleStream(t transport.ServerTransport, stream *transport.Str
 ```
 ## The clue
 
-I know the clue part is too simple to believe it. Yes, sometimes the answer is simple, while it took me some time to find it. No magic, pity.
-
 In ```s.handleStream()``` 
 * before the invocation of ```recvAndDecompress()``` there is no sign of reading the reqeust parameter.
 * after ```recvAndDecompress()``` the gRPC is ready to call ```md.Handler()```. 
 
 So the ```recvAndDecompress()``` must did something.
+* what's more, in ```md.Handler()```, ```df``` is called to decode the read data to request object in ```md.Handler()``` 
+* ```md.Handler()``` will is the service handler. It need the request object to finish its work.
+
+In ```recvAndDecompress()```, ```p.recvMsg()``` is called to read the request data, then ```recvAndDecompress()``` checks the payload and decompresses the recived data. Let's check the ```p.recvMsg()``` next.
+
+I know the clue part is too simple to believe it. Yes, sometimes the answer is simple. While it took me lots of time to find it. No magic, you just need some time and energy to find the answer.
+
 ```go
 func (s *Server) processUnaryRPC(t transport.ServerTransport, stream *transport.Stream, info *serviceInfo, md *MethodDesc, trInfo *traceInfo) (err error) {
 +-- 80 lines: sh := s.opts.statsHandler·····························································································································
@@ -240,10 +274,7 @@ func (s *Server) processUnaryRPC(t transport.ServerTransport, stream *transport.
     }
     return err
 }
-```
-In ```recvAndDecompress()```, ```p.recvMsg()``` is called to read the messsage. Follow it.
 
-```go
 func recvAndDecompress(p *parser, s *transport.Stream, dc Decompressor, maxReceiveMessageSize int, payInfo *payloadInfo, compressor encoding.Compressor) ([]byte, er  ror) {                             
     pf, d, err := p.recvMsg(maxReceiveMessageSize)
     if err != nil {
@@ -292,12 +323,12 @@ The repeated sequence of Length-Prefixed-Message items is delivered in DATA fram
 * Message → *{binary octet}
 ```
 
-After carefully check the source code of ```recvMsg()```. 
+After carefully check the source code of ```recvMsg()```, we can sure that:
 * ```pf``` is the *Compressed-Flag*. 
 * ```length``` is the *Message-Length*.
 * ```msg``` is the *Message*
 
-It's clear that ```p.r.Read()``` is used to read the data frame. From the ```parser``` definition, it's just a normal struct with a recvMsg method. Its ```header [5]byte``` field is normal, while the ```r io.Reader``` field is the suspicious. Let's check the ```p.r.Read()``` method.
+It's clear that ```p.r.Read()``` is used to read the data frame. The type of ```p``` is ```parser```. From the ```parser``` definition, it's just a normal struct with a ```recvMsg method```. Its ```header [5]byte``` field is normal, while the ```r io.Reader``` field is suspicious. Let's check the ```p.r.Read()``` method.
 
 ```go
 // parser reads complete gRPC messages from the underlying reader.
@@ -357,16 +388,18 @@ func (p *parser) recvMsg(maxReceiveMessageSize int) (pf payloadFormat, msg []byt
     return pf, msg, nil
 }
 ```
-The value of ```p``` is assigned through the following statement:
+The value of ```p``` is assigned by the following statement:
 
 ```go
 d, err := recvAndDecompress(&parser{r: stream}, stream, dc, s.opts.maxReceiveMessageSize, payInfo, decomp)
 ```
-The following call stack will happens: 
+
+The type of ```r``` is ```Stream```, When ```p.r.Read()``` is calloed, the following call stack will happens: 
 * ```p.r.Read()``` is defined by ```Stream.Read()```,
 * ```Stream.Read()``` calls ```s.requestRead()```, which calls ```t.adjustWindow()```, no data read, ignore it.
 * ```Stream.Read()``` calls ```io.ReadFull(s.trReader, p)```, which calls ```s.trReader.Read()```
 * ```s.trReader.Read()``` calls ``` t.reader.Read(p)```, 
+* ```t.reader``` is assigned by ```recvBufferReader``` struct,
 * ```t.reader.Read(p)``` is defined by ```recvBufferReader.Read()```,
 * ```recvBufferReader.Read()``` calls ```recvBufferReader.read()```,
 * ```recvBufferReader.read()``` read the ```recvMsg``` from channel ```m := <-r.recv.get()``` and calls ```recvBufferReader.readAdditional()``` to finish the read action.
@@ -510,14 +543,14 @@ func (r *recvBufferReader) readAdditional(m recvMsg, p []byte) (n int, err error
 }
 ```
 ## Message reader
-* ```r.recv``` is ```*recvBuffer```. Its ```get()``` method just return the ```<-chan recvMsg```. 
+* ```r.recv``` is of type ```*recvBuffer```. Its ```get()``` method just return the ```<-chan recvMsg```. 
 * ```r.recv``` is assigned by ```s.buf``` from the above code. 
 * ```s.buf``` is assigned by ```buf```, which is the return value of ```newRecvBuffer()```
-* ```newRecvBuffer()``` simple create and return a ```*recvBuffer```, the ```recvBuffer.c``` field is a buffered channel:```chan recvMsg``` 
+* ```newRecvBuffer()``` simplely creates and returns a ```*recvBuffer```, the ```recvBuffer.c``` field is a buffered channel:```chan recvMsg``` 
 
-In Conclusion: ```s.handleStream()``` try to read the reqeust parameter from a channel ```chan recvMsg```. Which is a buffered channel belong to ```Stream.buf.c``` 
+From [The clue](#the-clue) to here, we have the conclusion: ```s.handleStream()``` try to read the reqeust data from the channel ```recvBuffer.c```. Which is the same buffered channel ```Stream.buf.c``` 
 
-Then the next question is: who send the request parameter to that channel?
+Then the next question is: who send the request data to that channel?
 
 For convenience, All realated code is showned in one place.
 
@@ -578,7 +611,21 @@ func (t *http2Server) operateHeaders(frame *http2.MetaHeadersFrame, handle func(
 ```
 ## Message sender
 
-Let's back to the start point. In ```HandleStreams()```, ```t.framer.fr.ReadFrame()``` has already been checked. There is no sign of sending message to channel. The next reasonable method is ```t.handleData(frame)```.
+Let's back to the start point. In ```HandleStreams()```, ```t.framer.fr.ReadFrame()``` has been checked. There is no sign of sending message to a channel. The next suspicious method is ```t.handleData(frame)```. Which is used to handle ```*http2.DataFrame```. see the [The problem](#the-problem) for code snippet.
+
+```handleData()``` perform the following work:
+* connection flow control
+* forward the data frame to the selected ```Stream```
+
+The fowarding work includes:
+* select the right stream to dispatch: ```s, ok := t.getStream(f)```
+* copy the payload to ```buffer```,
+* build a ```recvMsg``` with the payload ```buffer```,
+* call ```s.write()```, which calls ```s.buf.put()```,
+* ```s.buf.put()``` is defined by ```*recvBuffer.put()```,
+* in ```*recvBuffer.put()```, the payload ```recvMsg``` will be sent to the ```recvBuffer.c```.
+
+In conclusion: ```st.HandleStreams()``` will send the request data to the channel ```recvBuffer.c```. Which is the same buffered channel ```Stream.buf.c``` 
 
 For convenience, All realated code is showned in one place.
 
@@ -649,21 +696,7 @@ func (t *http2Server) handleData(f *http2.DataFrame) {
         s.write(recvMsg{err: io.EOF})
     }
 }
-```
-```handleData()``` perform the following work:
-* connection flow control
-* forward the data frame to the selected ```Stream```
 
-The fowarding work includes:
-* select the right stream to dispatch: ```s, ok := t.getStream(f)```
-* copy the payload to ```buffer```,
-* build a ```recvMsg``` with the payload ```buffer```,
-* call ```s.write()```, which calls ```s.buf.put()```,
-* ```s.buf.put()``` is defined by ```*recvBuffer.put()```,
-* in ```*recvBuffer.put()```, the payload ```recvMsg``` will be sent to the ```recvBuffer.c```.
-
-In conclusion: ```st.HandleStreams()``` will send the request parameter to the same channel ```chan recvMsg```. Which is a buffered channel belong to ```Stream.buf.c``` 
-```go
 func (t *http2Server) handleData(f *http2.DataFrame) {
     size := f.Header().Length
     var sendBDPPing bool
