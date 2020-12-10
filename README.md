@@ -15,7 +15,7 @@ Get a quick glimpse from the following diagram. See  [The bigger picture](docs/c
   * [Send Request-Headers](docs/request.md#send-request-headers)
   * [Send Length-Prefixed-Message and EOS](docs/request.md#send-length-prefixed-message-and-eos)
   
-### [Reply with Response](docs/response.md)
+### [Send Response](docs/response.md)
 * [Application code](docs/response.md#application-code)
 * [Register service](docs/response.md#register-service)
 * [Serve request](docs/response.md#serve-request)                                

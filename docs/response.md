@@ -1,4 +1,4 @@
-# Reply with response
+# Send Response
 * [Application code](#application-code)
 * [Register service](#register-service)
 * [Serve request](#serve-request)                                

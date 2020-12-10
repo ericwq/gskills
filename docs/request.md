@@ -85,7 +85,7 @@ func (cc *ClientConn) Invoke(ctx context.Context, method string, args, reply int
 * To send the request, we need a HTTP 2 stream. Besides create the client stream, ```newClientStream``` also process the ***Request-Headers***
 * ```cs.SendMsg(req)``` will process the ***Length-Prefixed-Message***, 
 * ***EOS*** is just the flag in the last data frame.
-* For this case, we will ignore the ```cs.RecvMsg()```. We will discuss the server response process in [Reply with Response](docs/response.md).
+* For this case, we will ignore the ```cs.RecvMsg()```. We will discuss the server response process in [Send Response](docs/response.md).
 
 ```go
 func invoke(ctx context.Context, method string, req, reply interface{}, cc *ClientConn, opts ...CallOption) error {
