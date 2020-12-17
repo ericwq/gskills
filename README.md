@@ -45,7 +45,7 @@ Get a quick glimpse from the following diagram. See  [The bigger picture](docs/c
 
 ### [Interceptor](docs/interceptor.md)
 * [Interceptor chain execution flow](docs/interceptor.md#interceptor-chain-execution-flow)   
-* [Launch Intercetor](docs/interceptor.md#launch-interceptor)  
+* [Launch Interceptor](docs/interceptor.md#launch-interceptor)  
 * [Use Interceptor](docs/interceptor.md#use-interceptor)
 
 ### [Authentication](docs/auth.md)

@@ -1,6 +1,6 @@
 # Interceptor
 * [Interceptor chain execution flow](#interceptor-chain-execution-flow)   
-* [Launch Intercetor](#launch-interceptor)  
+* [Launch Interceptor](#launch-interceptor)  
 * [Use Interceptor](#use-interceptor)
 
 gPRC Interceptor is a powerful mechanism to add addtional logic such as logging, authentication, authorization, metrics, tracing, and any other customer requirements.
@@ -109,7 +109,7 @@ Now the interceptor chain is ready . The execution flow is as following.
 
 now we only have the interceptor chain, we need a entry point to launch this chain.   
 
-## Launch Intercetor
+## Launch Interceptor
 ```_Greeter_SayHello_Handler``` is the entry point to launch the interceptor chain, while this entry point need to be called by the gRPC.
 
 gRPC will generate the following code to register the business service. Please note the **ServiceName**, **MethodName** and **Handler**. Your business service will not be used directly, the ```_Greeter_SayHello_Handler``` will be used instead. 
