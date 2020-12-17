@@ -49,6 +49,11 @@ Get a quick glimpse from the following diagram. See  [The bigger picture](docs/c
 * [Use Interceptor](docs/interceptor.md#use-interceptor)
 
 ### [Authentication](docs/auth.md)
+* [Client side](docs/auth.md#client-side)
+* [Server side](docs/auth.md#server-side)
+* [DialOption and ServerOption](docs/auth.md#dialoption-and-serveroption)
+* [Server internal](docs/auth.md#server-internal)
+* [Client internal](docs/auth.md#client-internal)
 
 ### [Load Balancing](docs/load.md)
 
