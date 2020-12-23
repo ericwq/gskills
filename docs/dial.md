@@ -807,7 +807,7 @@ func (acbw *acBalancerWrapper) Connect() {
 
 ```
 ## Dial process part II
-It's time to show the Dial process part II. Part II focus on the transport connection with the target server.
+It's time to show the Dial process part II. Part II focus on establishing transport connection with the target server.
 - yellow box represents the important type and method/funciton.
 - green box represents a function run in a dedicated goroutine.
 - dash box represents the important type/struct. 
@@ -931,7 +931,7 @@ type scStateUpdate struct {
 
 ```
 ### addrConn.resetTransport()
-- In the last step of ```addrConn.connect()```,```addrConn.resetTransport()``` will be called to connecting to the server asynchronously. 
+- In the last step of ```addrConn.connect()```,```addrConn.resetTransport()``` will be called to connect to the server asynchronously. 
 - ```ac.tryAllAddrs()``` will be called with the spcified ```connectDeadline```, actually ```addrConn.tryAllAddrs()``` will be called.
   - In ```addrConn.tryAllAddrs()```, ```ac.createTransport()``` will be called, actually ```addrConn.createTransport()``` will be called.
   - In ```addrConn.createTransport()```, ```transport.NewClientTransport()``` will be called.
