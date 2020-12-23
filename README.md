@@ -4,10 +4,23 @@ My original goal is to understand the source code of [gRPC-go](https://github.co
 
 Gradually, as more chapter finished, it becomes "Understanding gRPC-go". All content are golang and gRPC-go related. 
 
-Get a quick glimpse from the following diagram. See  [The bigger picture](docs/control.md#the-bigger-picture) for detail.
-![images.005](images/images.005.png)
+Get a quick glimpse from the following diagram. See  [Balancer and Resolver API](docs/dial.md#balancer-and-resolver-api) for detail.
+![images.008](images/images.008.png)
 
 ## Content 
+
+### [Client Dial](docs/dial.md)
+- [Balancer and Resolver API](docs/dial.md#balancer-and-resolver-api)
+- [Dial process part I](docs/dial.md#dial-process-part-i)
+  - [newCCResolverWrapper()](docs/dial.md#newccresolverwrapper)
+  - [ccResolverWrapper.UpdateState()](docs/dial.md#ccresolverwrapperupdatestate)
+  - [ClientConn.updateResolverState()](docs/dial.md#clientconnupdateresolverstate)
+  - [newCCBalancerWrapper()](docs/dial.md#newccbalancerwrapper)
+  - [ccBalancerWrapper.updateClientConnState()](docs/dial.md#ccbalancerwrapperupdateclientconnstate)
+- [Dial process part II](docs/dial.md#dial-process-part-ii)
+  - [addrConn.connect()](docs/dial.md#addrconnconnect)
+  - [addrConn.resetTransport()](docs/dial.md#addrconnresettransport)
+
 ### [Send Request](docs/request.md)
 * [Application code](docs/request.md#application-code)
 * [Client stub](docs/request.md#client-stub)
