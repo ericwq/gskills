@@ -577,3 +577,117 @@ func (c *tlsCreds) ServerHandshake(rawConn net.Conn) (net.Conn, AuthInfo, error)
 
 ```
 ## Client internal
+At the [Client side](#client-side), ```grpc.WithPerRPCCredentials()``` sets the value of ```o.copts.PerRPCCredentials```.  ```grpc.WithTransportCredentials()``` sets the value of ```o.copts.TransportCredentials```. Let's discuss how the client use ```o.copts.PerRPCCredentials``` and ```o.copts.TransportCredentials```.
+
+At the [Client Dial](dial.md), ```newHTTP2Client()``` will be called to establish the secure transport conneciton. Before ```newHTTP2Client()``` is called, the ```opts ConnectOptions``` parameter need to get the right value:
+
+![images/images.007.png](../images/images.007.png)
+
+- In ```ClientConn.newAddrConn()```, ```ac.dopts``` is assigned the value of ```cc.dopts```, which is ```dopts dialOption``` field of ```ClientConn``` struct.
+- In ```addrConn.tryAllAddrs()```, ```ac.createTransport()``` gets the ```copts``` parameter from ```ac.dopts.copts```
+- In ```addrConn.createTransport()```, ```transport.NewClientTransport()``` gets the ```copts``` parameter from input arguments.
+- In ```NewClientTransport```, ```newHTTP2Client()``` gets the ```opts``` parameter from input arguments.
+- In ```newHTTP2Client()```, After the ```dial()``` returned, the TCP connection has been established.
+  - Extract the ```transportCreds``` and ```perRPCCreds``` from ```opts``` 
+  - If ```transportCreds``` is not nil, call ```transportCreds.ClientHandshake()``` to perform the TLS handshake.
+  - In our case, ```transportCreds``` is created by previous ```credentials.NewClientTLSFromFile()``` invocation. So ```transportCreds``` is an object of type ```tlsCreds```.
+
+```go
+// newHTTP2Client constructs a connected ClientTransport to addr based on HTTP2
+// and starts to receive messages on it. Non-nil error returns if construction
+// fails.
+func newHTTP2Client(connectCtx, ctx context.Context, addr resolver.Address, opts ConnectOptions, onPrefaceReceipt func(), onGoAway func(GoAwayReason), onClos       e func()) (_ *http2Client, err error) {
+    scheme := "http"
+    ctx, cancel := context.WithCancel(ctx)
+    defer func() {
+        if err != nil {
+            cancel()
+        }
+    }()
+
+    conn, err := dial(connectCtx, opts.Dialer, addr, opts.UseProxy, opts.UserAgent)
+    ...
+
+    transportCreds := opts.TransportCredentials                                
+    perRPCCreds := opts.PerRPCCredentials                                                              
+                                                    
+    if b := opts.CredsBundle; b != nil {                                  
+        if t := b.TransportCredentials(); t != nil {                                
+            transportCreds = t                                
+        }                                           
+        if t := b.PerRPCCredentials(); t != nil {                                
+            perRPCCreds = append(perRPCCreds, t)                                
+        }                                
+    }                                                                                                              
+    if transportCreds != nil {                                
+        // gRPC, resolver, balancer etc. can specify arbitrary data in the                                
+        // Attributes field of resolver.Address, which is shoved into connectCtx                                                          
+        // and passed to the credential handshaker. This makes it possible for                                
+        // address specific arbitrary data to reach the credential handshaker.                                           
+        contextWithHandshakeInfo := internal.NewClientHandshakeInfoContext.(func(context.Context, credentials.ClientHandshakeInfo) context.Context)
+        connectCtx = contextWithHandshakeInfo(connectCtx, credentials.ClientHandshakeInfo{Attributes: addr.Attributes})
+        conn, authInfo, err = transportCreds.ClientHandshake(connectCtx, addr.ServerName, conn)                                                        
+        if err != nil {                                                                                                        
+            return nil, connectionErrorf(isTemporary(err), err, "transport: authentication handshake failed: %v", err)
+        }
+        for _, cd := range perRPCCreds {
+            if cd.RequireTransportSecurity() {
+                if ci, ok := authInfo.(interface {
+                    GetCommonAuthInfo() credentials.CommonAuthInfo
+                }); ok {
+                    secLevel := ci.GetCommonAuthInfo().SecurityLevel
+                    if secLevel != credentials.InvalidSecurityLevel && secLevel < credentials.PrivacyAndIntegrity {
+                        return nil, connectionErrorf(true, nil, "transport: cannot send secure credentials on an insecure connection")
+                    }
+                }
+            }
+        }
+        isSecure = true
+        if transportCreds.Info().SecurityProtocol == "tls" {
+            scheme = "https"
+        }
+    }
+    ...
+
+    return t, nil
+}
+
+// NewClientTLSFromFile constructs TLS credentials from the provided root
+// certificate authority certificate file(s) to validate server connections. If
+// certificates to establish the identity of the client need to be included in                      
+// the credentials (eg: for mTLS), use NewTLS instead, where a complete
+// tls.Config can be specified.
+// serverNameOverride is for testing only. If set to a non empty string,
+// it will override the virtual host name of authority (e.g. :authority header
+// field) in requests.
+func NewClientTLSFromFile(certFile, serverNameOverride string) (TransportCredentials, error) {
+    b, err := ioutil.ReadFile(certFile)
+    if err != nil {
+        return nil, err
+    }
+    cp := x509.NewCertPool()
+    if !cp.AppendCertsFromPEM(b) {
+        return nil, fmt.Errorf("credentials: failed to append certificates")
+    }
+    return NewTLS(&tls.Config{ServerName: serverNameOverride, RootCAs: cp}), nil
+}
+
+// NewTLS uses c to construct a TransportCredentials based on TLS.                                                   
+func NewTLS(c *tls.Config) TransportCredentials {                                                                    
+    tc := &tlsCreds{credinternal.CloneTLSConfig(c)}
+    tc.config.NextProtos = credinternal.AppendH2ToNextProtos(tc.config.NextProtos)                                   
+    return tc                                                                                                        
+}                                                                                                                    
+
+// tlsCreds is the credentials required for authenticating a connection using TLS.                                   
+type tlsCreds struct {
+    // TLS configuration                                                                                             
+    config *tls.Config                                                                                               
+}                                                                                                                    
+                                                                                                                     
+```
+
+
+From the [Send Request-Headers](request.md#send-request-headers), in the ```newClientStream()``` method, 
+
+![images/images.003.png](../images/images.003.png)
