@@ -612,22 +612,26 @@ func (c *tlsCreds) ServerHandshake(rawConn net.Conn) (net.Conn, AuthInfo, error)
 
 ```
 ## Client internal
-At the [Client side](#client-side), ```grpc.WithPerRPCCredentials()``` sets the value of ```o.copts.PerRPCCredentials```.  ```grpc.WithTransportCredentials()``` sets the value of ```o.copts.TransportCredentials```. Let's discuss how the client use ```o.copts.PerRPCCredentials``` and ```o.copts.TransportCredentials```.
+In the [Client side](#client-side), ```grpc.WithPerRPCCredentials()``` sets the value of ```o.copts.PerRPCCredentials```.  ```grpc.WithTransportCredentials()``` sets the value of ```o.copts.TransportCredentials```. Let's discuss how the client use ```o.copts.PerRPCCredentials``` and ```o.copts.TransportCredentials```.
 
-At the [Client Dial](dial.md), ```newHTTP2Client()``` will be called to establish the secure transport conneciton. Before ```newHTTP2Client()``` is called, the ```opts ConnectOptions``` parameter need to get the right value:
+In the [Client Dial](dial.md), ```newHTTP2Client()``` will be called to establish the secure transport connection. Before ```newHTTP2Client()``` is called, the ```opts ConnectOptions``` parameter need to be set correctly.
 
+![images/images.006.png](../images/images.006.png)
 ![images/images.007.png](../images/images.007.png)
 
-- In ```ClientConn.newAddrConn()```, ```ac.dopts``` is assigned the value of ```cc.dopts```, which is ```dopts dialOption``` field of ```ClientConn``` struct.
+- In ```ccBalancerWrapper.NewSubConn()```, ```ccb.cc.newAddrConn()``` will be called, actually ```ClientConn.newAddrConn()``` will be called.
+  - In ```ClientConn.newAddrConn()```, ```ac.dopts``` is assigned the value of ```cc.dopts```, which is ```dopts dialOption``` field of ```ClientConn``` struct.
 - In ```addrConn.tryAllAddrs()```, ```ac.createTransport()``` gets the ```copts``` parameter from ```ac.dopts.copts```. ```ac.dopts.copts``` is the ```copts  transport.ConnectOptions``` field of ```ClientConn``` struct.
 - In ```addrConn.createTransport()```, ```transport.NewClientTransport()``` gets the ```copts``` parameter from input arguments.
 - In ```NewClientTransport```, ```newHTTP2Client()``` gets the ```opts``` parameter from input arguments.
 - In ```newHTTP2Client()```, After the ```dial()``` finished, the normal TCP connection has been established.
   - ```newHTTP2Client()``` extracts the ```transportCreds``` and ```perRPCCreds``` from ```opts``` 
   - If ```transportCreds``` is not nil, call ```transportCreds.ClientHandshake()``` to perform the TLS handshake.
-  - In our case, ```transportCreds``` is created by previous ```credentials.NewClientTLSFromFile()``` invocation. So ```transportCreds``` is an value of type ```tlsCreds```.
+  - In our case, ```transportCreds``` is created by previous ```credentials.NewClientTLSFromFile()``` invocation. So ```transportCreds``` is a value of type ```tlsCreds```.
 
-That's the way gRPC using ```o.copts.TransportCredentials``` option. Let's continue the discussion of ```o.copts.PerRPCCredentials```.
+That's the way gRPC using ```o.copts.TransportCredentials``` option, eventually ```o.copts.TransportCredentials``` option is used to perform the tls client hand shake. 
+
+Let's continue the discussion of ```o.copts.PerRPCCredentials``` next.
 
 ```go
 // newHTTP2Client constructs a connected ClientTransport to addr based on HTTP2
@@ -835,11 +839,11 @@ Let's discuss the ```opts.PerRPCCredentials``` option.
 
 - In the same ```newHTTP2Client()```, ```newHTTP2Client()``` extracts the ```transportCreds``` and ```perRPCCreds``` from opts.
 - After ```transportCreds.ClientHandshake()``` finished, ```authInfo``` got the value.
-- ```newHTTP2Client()``` creates a ```http2Client``` and assigns the ```perRPCCreds``` field with the ```perRPCCreds```.
+- ```newHTTP2Client()``` creates a ```http2Client``` and assigns the ```perRPCCreds``` field with the vale ```perRPCCreds```.
 
-The above happens in the establishing connection phase. ```opts.PerRPCCredentials``` option is used for RPC. Next phase is sending request header phase.
+The above happens in the establishing connection phase. ```opts.PerRPCCredentials``` option is used in RPC call phase. Let's move on to sending request header phase.
 
-At the [Send Request-Headers](request.md#send-request-headers), in the ```a.t.NewStream()``` method, ```http2Client.createHeaderFields()``` will be called to build the HPACK header fields.
+In the [Send Request-Headers](request.md#send-request-headers), in the ```a.t.NewStream()``` method, ```http2Client.createHeaderFields()``` will be called to build the HPACK header fields.
 
 ![images/images.003.png](../images/images.003.png)
 
@@ -934,7 +938,7 @@ func (oa oauthAccess) GetRequestMetadata(ctx context.Context, uri ...string) (ma
 ```
 ## Server internal 2
 
-At [Server side](#server-side), ```ensureValidToken()``` calls ```metadata.FromIncomingContext()``` to get the metadata from the context. Who put that metadata to the context?  There is only one function ```metadata.NewIncomingContext()``` which can set the ```mdIncomingKey{}```.  Then who call ```metadata.NewIncomingContext()```?  
+In [Server side](#server-side), ```ensureValidToken()``` calls ```metadata.FromIncomingContext()``` to get the metadata from the context. Who put that metadata into the context?  There is only one function ```metadata.NewIncomingContext()``` which can set the ```mdIncomingKey{}```.  Then the question is: who can call ```metadata.NewIncomingContext()```?  
 
 From the [Serve Request](response.md#serve-request), in the ```t.operateHeaders()``` method.
 - ```decodeState``` is initialized and its ```state.decodeHeader()``` method is called.
