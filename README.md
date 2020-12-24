@@ -67,6 +67,7 @@ Get a quick glimpse from the following diagram. See  [Balancer and Resolver API]
 * [DialOption and ServerOption](docs/auth.md#dialoption-and-serveroption)
 * [Server internal](docs/auth.md#server-internal)
 * [Client internal](docs/auth.md#client-internal)
+* [Server internal 2](docs/auth.md#server-internal-2)
 
 ### [Load Balancing](docs/load.md)
 
