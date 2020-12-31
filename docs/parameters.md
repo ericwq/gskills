@@ -192,7 +192,7 @@ In ```s.handleStream()```
 
 So the ```recvAndDecompress()``` must did something.
 * what's more, in ```md.Handler()```, ```df``` is called to decode the read data to request object in ```md.Handler()``` 
-* ```md.Handler()``` will is the service handler. It need the request object to finish its work.
+* ```md.Handler()``` is the service handler. It needs the request object to finish its work.
 
 In ```recvAndDecompress()```, ```p.recvMsg()``` is called to read the request data, then ```recvAndDecompress()``` checks the payload and decompresses the recived data. Let's check the ```p.recvMsg()``` next.
 
