@@ -1,11 +1,12 @@
-# Load Balancing - gRPC part
+# Load Balancing 
 - [Name resolving](#name-resolving)
   - [exampleResolver](#exampleresolver)
   - [dnsResolver](#dnsresolver)
+- [Load balancing](#load-balancing)
 
 Let's discuss the name resolving example and load balancing example from [gRPC examples](https://github.com/grpc/grpc-go/tree/master/examples). Through this discussion, we can learn how to perform the name resolving and load balancing tasks. We can also learn load balancing related internal components of gRPC. 
 
-gRPC provides a rich set of load balancing machanism. As Envoy becomes the de facto standard. gRPC add the support to xDS protocol. We will discuss the xDS protocol in next chapter.
+gRPC provides a rich set of load balancing machanism. As Envoy becomes the de facto standard. gRPC adds the support to xDS protocol. We will discuss the xDS protocol in seperated chapter.
 
 ## Name resolving
 
@@ -297,3 +298,4 @@ func (d *dnsResolver) watcher() {
 }
 
 ```
+## Load balancing
