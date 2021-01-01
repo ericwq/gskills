@@ -347,8 +347,8 @@ func (ccr *ccResolverWrapper) UpdateState(s resolver.State) {
 - `ccr.cc.updateResolverState()` belongs to `ClientConn` which is the core of gRPC.
 - In this case, `err` is nil. `cc.dopts.disableServiceConfig` is false. `s.ServiceConfig` is nil.
 - The second `cc.maybeApplyDefaultServiceConfig()` is called.
-  - in this case, `cc.sc` is nil, `cc.dopts.defaultServiceConfig` is also nil.
-  - `cc.applyServiceConfigAndBalancer()` is called with the `emptyServiceConfig` `defaultConfigSelector{emptyServiceConfig}` and `addrs` as parameters.
+  - in this case, `cc.sc` is nil, `cc.dopts.defaultServiceConfig` is false.
+  - `cc.applyServiceConfigAndBalancer()` is called with the `emptyServiceConfig`, `defaultConfigSelector{emptyServiceConfig}` and `addrs` as parameters.
   - In `cc.applyServiceConfigAndBalancer()` the main outcome is assign value to `cc.balancerWrapper`
     - In this case, `cc.dopts.balancerBuilder` is nil. 
     - The value of `newBalancerName` is `PickFirstBalancerName` Which is `pick_first`
