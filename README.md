@@ -69,7 +69,18 @@ Get a quick glimpse from the following diagram. See  [Balancer and Resolver API]
 * [Client internal](docs/auth.md#client-internal)
 * [Server internal 2](docs/auth.md#server-internal-2)
 
-### [Load Balancing](docs/load.md)
+### [Load Balancing - Client](docs/load.md)
+- [Name resolving](docs/load.md#name-resolving)
+  - [exampleResolver](docs/load.md#exampleresolver)
+  - [dnsResolver](docs/load.md#dnsresolver)
+- [Load balancing](docs/load.md#load-balancing)
+  - [defaultServiceConfigRawJSON](docs/load.md#defaultserviceconfigrawjson)
+  - [service config and dnsResovler](docs/load.md#service-config-and-dnsresovler)
+  - [defaultServiceConfig](docs/load.md#defaultserviceconfig)
+  - [UpdateClientConnState()](docs/load.md#updateclientconnstate)
+  - [UpdateSubConnState()](docs/load.md#updatesubconnstate)
+  - [newAttemptLocked()](docs/load.md#newattemptlocked)
+
 
 ## Reading material
 The following books help me building a solid fundation for http2 and gRPC. They answer a lot of questions about Why ,What and some part of How, while gSkills purely focus on How to implement them in gRPC.
