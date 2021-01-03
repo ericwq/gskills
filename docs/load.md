@@ -189,11 +189,11 @@ func init() {
 
 ```
 ### dnsResolver
-Here is the code snippet of `dnsBuilder` and `dnsResolver`.  `dnsResolver`'s behavior is different:
+Here is the code snippet of `dnsBuilder` and `dnsResolver`.  `dnsResolver`'s behavior is different from `exampleResolver`:
 - `dnsBuilder.Build()` starts a new goroutine `dnsResolver.watcher()` and calls `dnsResolver.ResolveNow()` to send a signal to `dnsResolver.watcher()`
 - Upon receive the signal from `dnsResolver.ResolveNow()`, `dnsResolver.watcher()` goroutine stops waiting and performs `dnsResolver.lookup()` to lookup the corresponding IP address.
 - If the `dnsResolver.lookup()` successes, It will call `ccResolverWrapper.UpdateState()` to notify the new `resolver.State` 
-- Remember `exampleResolverBuilder.start()` calling `ccResolverWrapper.UpdateState()`? From there the dialing process continues.
+- Remember `exampleResolverBuilder.start()` calling `ccResolverWrapper.UpdateState()`? From `ccResolverWrapper.UpdateState()` the [Client Dial](dial.md) process continues.
 
 ```go
 // Build creates and starts a DNS resolver that watches the name resolution of the target.
@@ -679,7 +679,7 @@ type jsonRetryPolicy struct {
 ```
 ### service config and dnsResovler
 
-Let's briefly introduct how dns resolver use service cofig:
+Let's briefly introduct how dns resolver use service config:
 - `dnsBuilder.Build()` starts a new goroutine `d.watcher()`, which actually starts `dnsResolver.watcher()`.
 - upon receive a signal sent by `dnsResolver.ResolveNow()`, `dnsResolver.watcher()` calls `d.lookup()`, which actually calls `dnsResolver.lookup()`
 - `dnsResolver.lookup()` calls `d.lookupSRV()`, `d.lookupHost()` to resolve the address and SRV record.
@@ -832,7 +832,7 @@ Now `defaultServiceConfig` is set. When client dials in [ClientConn.updateResolv
 - In `cc.applyServiceConfigAndBalancer()`, `newBalancerName` will get the value from `cc.sc.lbConfig.name` or `*cc.sc.LB` or `PickFirstBalancerName` or `grpclbName`.
 - In our case, for the first client, `newBalancerName` will get the value from `PickFirstBalancerName`, which is '"pick_first"'
 - In our case, for the second client, `newBalancerName` will get the value from `cc.sc.lbConfig.name`, which is '"round_robin"'
-- At the last, `switchBalancer()` will be called to find the balancer builder from balncer map and `newCCBalancerWrapper()` will be called to initialize balancer.
+- At the last, `switchBalancer()` will be called to find the balancer builder from balancer map and `newCCBalancerWrapper()` will be called to initialize balancer.
 
 In [ClientConn.updateResolverState()](dial.md#clientconnupdateresolverstate),
 - If the parameter `s resolver.State`'s field `s.ServiceConfig.Config` is not nil, which means dns resolver does fill in the `ServiceConfig.Config` field.
@@ -840,7 +840,7 @@ In [ClientConn.updateResolverState()](dial.md#clientconnupdateresolverstate),
 - The service config provided by the resolver takes the higher priority than default service config. 
 - The service config provided by the resolver can be disabled by `WithDisableServiceConfig()`
 
-Up to now, we only get a initialized balncer. Next, Let's discuss the behavior of balancer.
+Up to now, we only get a initialized balancer. Next, Let's discuss the behavior of balancer.
 ```go
 func (cc *ClientConn) maybeApplyDefaultServiceConfig(addrs []resolver.Address) {                                                                       
     if cc.sc != nil {                                                                                             
@@ -950,7 +950,7 @@ At Client Dial [ClientConn.updateResolverState()](dial.md#clientconnupdateresolv
   - The behavior is detailed in [Here](dial.md#ccbalancerwrapperupdateclientconnstate).
   - `pick_first` balancer will call `b.cc.NewSubConn()`, `b.sc.Connect()` and `b.cc.UpdateState()` to establish a transport connection
   - `pick_first` balancer calls `b.cc.UpdateState()`, which actually calls `ccBalancerWrapper.UpdateState()`
-- For `round_robin` balncer, `baseBalancer.UpdateClientConnState()` will be called
+- For `round_robin` balancer, `baseBalancer.UpdateClientConnState()` will be called
   - For every address, `b.cc.NewSubConn()` and `sc.Connect()` is called to establish a seperated transport connection.
   - `ccBalancerWrapper.UpdateState()` will not be called. 
 - `ccBalancerWrapper.UpdateState()`will notify the gRPC the Connectivity state and update the `Picker`. 
