@@ -692,7 +692,7 @@ func (pw *pickerWrapper) updatePicker(p balancer.Picker) {
 ```
 ### ccBalancerWrapper.updateClientConnState()
 - In `ccBalancerWrapper.updateClientConnState()` `ccb.balancer.UpdateClientConnState()` will be called.
-- In this case, `Balncer` is `pickfirstBalancer` So `pickfirstBalancer.UpdateClientConnState()` will be called.
+- In this case, `Balancer` is `pickfirstBalancer` So `pickfirstBalancer.UpdateClientConnState()` will be called.
 - In `pickfirstBalancer.UpdateClientConnState()` `b.sc` is nil. 
   - `b.cc.NewSubConn()` is called, actually `ccBalancerWrapper.NewSubConn()` will be called.
     - `ccBalancerWrapper.NewSubConn()` calls `ccb.cc.newAddrConn()` to create `addrConn`
