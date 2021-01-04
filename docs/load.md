@@ -12,13 +12,13 @@
   
 Let's discuss the name resolving example and load balancing example from [gRPC examples](https://github.com/grpc/grpc-go/tree/master/examples). Through this discussion, we can learn how to perform the name resolving and load balancing tasks. We can also learn load balancing related internal components of gRPC. 
 
-gRPC provides a rich set of load balancing machanism. As Envoy becomes the de facto standard. gRPC adds the support to xDS protocol. We will discuss the xDS protocol in seperated chapter.
+gRPC provides a rich set of load balancing mechanism. As Envoy becomes the de facto standard. gRPC adds the support to xDS protocol. We will discuss the xDS protocol in seperated chapter.
 
 ## Name resolving
 
 Here we will discuss `name_resolving` example. This examples shows how application can pick different name resolvers. Please read the example READEME.md before continue.
 
-Please refer to the the following diagram (left side) and Resolver API to understand the whole design, see [Balancer and Resolver API](dial.md#balancer-and-resolver-api) for general summary.
+Please refer to the following diagram (left side) and Resolver API to understand the whole design, see [Balancer and Resolver API](dial.md#balancer-and-resolver-api) for general summary.
 
 ![image.008.png](../images/images.008.png)
 
@@ -98,8 +98,8 @@ type State struct {
 ### exampleResolver
 
 exampleResolver is created to resolve `resolver.example.grpc.io` to `localhost:50051`. 
-- The start point is the `init()` function. In `init()`,  `exampleResolverBuilder` is registerd in resover map `map[string]Builder`.
-- In [newCCResolverWrapper()](dial.md#newccresolverwrapper), `DialContext()` parses the `target` string and calls `getResolver()` to find the registerd `resolver.Builder`.
+- The start point is the `init()` function. In `init()`,  `exampleResolverBuilder` is registered in resolver map `map[string]Builder`.
+- In [newCCResolverWrapper()](dial.md#newccresolverwrapper), `DialContext()` parses the `target` string and calls `getResolver()` to find the registered `resolver.Builder`.
 - Next, `DialContext()` calls `newCCResolverWrapper()`, in `newCCResolverWrapper()`, `rb.Build()` will be called to build the resolver.
 - In our case, `rb.Build()` is actually `exampleResolverBuilder.Build()`.  
 - In `exampleResolverBuilder.Build()`, `r.start()` will be called.
@@ -110,7 +110,7 @@ exampleResolver is created to resolve `resolver.example.grpc.io` to `localhost:5
         }
 ``` 
 - where `exampleServiceName="resolver.example.grpc.io"` and `backendAddr="localhost:50051"`
-- `exampleResolverBuilder.start()` will calls [ccResolverWrapper.UpdateState()](dial.md#ccresolverwrapperupdatestate), a.k.a `r.cc.UpdateState()` to update the the `resolver.State` to `ccResolverWrapper`, 
+- `exampleResolverBuilder.start()` will calls [ccResolverWrapper.UpdateState()](dial.md#ccresolverwrapperupdatestate), a.k.a `r.cc.UpdateState()` to update the `resolver.State` to `ccResolverWrapper`, 
 - the new `resolver.State` whose `Addresses` field has value: `["localhost:50051"]`. 
 - In [ccResolverWrapper.UpdateState()](dial.md#ccresolverwrapperupdatestate), `ccr.poll()` goroutine will call `ccr.resolveNow()`. 
 - `ccr.resolveNow()` calls `ccr.resolver.ResolveNow()`, which actually calls`exampleResolver.ResolveNow()`.
@@ -679,7 +679,7 @@ type jsonRetryPolicy struct {
 ```
 ### service config and dnsResovler
 
-Let's briefly introduct how dns resolver use service config:
+Let's briefly introduce how dns resolver use service config:
 - `dnsBuilder.Build()` starts a new goroutine `d.watcher()`, which actually starts `dnsResolver.watcher()`.
 - upon receive a signal sent by `dnsResolver.ResolveNow()`, `dnsResolver.watcher()` calls `d.lookup()`, which actually calls `dnsResolver.lookup()`
 - `dnsResolver.lookup()` calls `d.lookupSRV()`, `d.lookupHost()` to resolve the address and SRV record.
@@ -695,13 +695,13 @@ Service config is defined in [service_config.go](https://github.com/grpc/grpc-go
 - `healthCheckConfig`: must be set as one of the requirement to enable LB channel health check.
 - `rawJSONString`: stores service config json string that get parsed into this service config struct.
 
-If you are familar with envoy, all of the features can be supported by envoy. Service config might be replaced by xDS protocol in the future.
+If you are familiar with envoy, all of the features can be supported by envoy. Service config might be replaced by xDS protocol in the future.
 
 Now, we understand the purpose of service config. You have two ways to set service config:
 - set the service config in dns TXT record and extract that information by dns resolver. Which is stored in `resolver.State.ServiceConfig`
 - set the service config through `defaultServiceConfigRawJSON` and extract it via `DialContext()`. Which is stored in `ClientConn.dopts.defaultServiceConfig`
 
-The following is the summary: Before the envoy emerges, gRPC team plans to build a rich set of load balancing machanism, including `grpclb` balancer, `rls` balancer, `round_robin` balancer, `pick_first` balancer. The following statement is quoted from [A27: xDS-Based Global Load Balancing](https://github.com/grpc/proposal/blob/master/A27-xds-global-load-balancing.md)
+The following is the summary: Before the envoy emerges, gRPC team plans to build a rich set of load balancing mechanism, including `grpclb` balancer, `rls` balancer, `round_robin` balancer, `pick_first` balancer. The following statement is quoted from [A27: xDS-Based Global Load Balancing](https://github.com/grpc/proposal/blob/master/A27-xds-global-load-balancing.md)
 
 "gRPC currently supports its own "grpclb" protocol for look-aside load-balancing.  However, the popular Envoy proxy uses the xDS API for many types of configuration, including load balancing, and that API is evolving into a standard that will be used to configure a variety of data plane software. In order to converge with this industry trend, gRPC will be moving from its original grpclb protocol to the new xDS protocol."
 
@@ -950,8 +950,8 @@ func (cc *ClientConn) switchBalancer(name string) {
     cc.curBalancerName = builder.Name()
     cc.balancerWrapper = newCCBalancerWrapper(cc, builder, cc.balancerBuildOpts)
 }
-
 ```
+
 ### UpdateClientConnState()
 At Client Dial [ClientConn.updateResolverState()](dial.md#clientconnupdateresolverstate) section, `ccBalancerWrapper.updateClientConnState()` will be called to establish the connection with the resolved target.
 - `ccBalancerWrapper.updateClientConnState()` calls `ccb.balancer.UpdateClientConnState()`. The balancer is determined by the run time value.
@@ -965,13 +965,11 @@ At Client Dial [ClientConn.updateResolverState()](dial.md#clientconnupdateresolv
 - `ccBalancerWrapper.UpdateState()`will notify the gRPC the Connectivity state and update the `Picker`. 
 
 ```go
-
 func (ccb *ccBalancerWrapper) updateClientConnState(ccs *balancer.ClientConnState) error {
     ccb.balancerMu.Lock()
     defer ccb.balancerMu.Unlock()
     return ccb.balancer.UpdateClientConnState(*ccs)                             
 }                                                 
-                    
 
 func (b *baseBalancer) UpdateClientConnState(s balancer.ClientConnState) error {
     // TODO: handle s.ResolverState.ServiceConfig?
@@ -1102,7 +1100,7 @@ At Client Dial [newCCBalancerWrapper()](dial.md#newccbalancerwrapper) section, g
 
 Now, all the real connection to the target backend server is ready and the `balancer.Picker` is ready. Let's continue the discussion of `balancer.Picker` behavior.
 
-```go
+``` go
 // watcher balancer functions sequentially, so the balancer can be implemented
 // lock-free.                                   
 func (ccb *ccBalancerWrapper) watcher() {
@@ -1219,10 +1217,10 @@ At Send request [Send Request-Headers](request.md#send-request-headers) section,
   - `p` is determined by run time value, `p` is set by `pickerWrapper.updatePicker()`.
   - For `pick_first` balancer, `p.Pick()` actually calls `picker.Pick()`.
     - `picker.Pick()` returns the `p.result`, which is updated by `pickfirstBalancer.UpdateSubConnState()`
-    - In our case, only '"localhost:50051"' will be returned.
+    - In our case, only `localhost:50051` will be returned.
   - For `round_robin` balancer, `p.Pick()` actually calls `rrPicker.Pick()`.
     - `rrPicker.Pick()` uses round robin policy to choose one of the sub connection and returns a new `balancer.PickResult`
-    - In our case, either '"localhost:50051"' or `"localhost:50052"` will be returned.
+    - In our case, either `localhost:50051` or `localhost:50052` will be returned.
   - The `pickResult` returned by `p.Pick()` is used to convert to `acBalancerWrapper` 
   - Next calls `acw.getAddrConn().getReadyTransport()` to return the real sub connection `transport.ClientTransport`.
 - After `ClientConn.getTransport()` returns the `transport.ClientTransport`, the returned `t` is assigned to `newAttempt.t`, then `cs.attempt = newAttempt`.
