@@ -83,7 +83,7 @@ Get a quick glimpse from the following diagram. See  [Balancer and Resolver API]
 
 
 ## Reading material
-The following books help me building a solid fundation for http2 and gRPC. They answer a lot of questions about Why ,What and some part of How, while gSkills purely focus on How to implement them in gRPC.
+The following books help me building a solid foundation for http2 and gRPC. They answer a lot of questions about Why ,What and some part of How, while gSkills purely focus on How to implement them in gRPC.
 
 * [HTTP/2 in Action](https://www.manning.com/books/http2-in-action?query=http2)
 * [gRPC: Up and Running](https://www.oreilly.com/library/view/grpc-up-and/9781492058328/)
