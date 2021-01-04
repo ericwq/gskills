@@ -11,7 +11,7 @@
   * [run](#run)
 * [framer](#framer)
 
-In [Send Response](response.md) and [Send Request](request.md), we mentioned ```t.controlBuffer``` several times. How does it works? It's not easy to answer that question. I found that we need the bigger picture to describe the process of gRPC call reply. Without the bigger picture it's hard to understand ```t.controlBuffer```'s responsibility, the role it plays and the relationship with other parts. Without it it's hard to answer the question correctly. 
+In [Send Response](response.md) and [Send Request](request.md), we mentioned `t.controlBuffer` several times. How does it works? It's not easy to answer that question. I found that we need the bigger picture to describe the process of gRPC call reply. Without the bigger picture it's hard to understand `t.controlBuffer`'s responsibility, the role it plays and the relationship with other parts. Without it it's hard to answer the question correctly. 
 
 It's the typical case: answer one question lead to more questions. If you can answer that question, you will know better about gRPC than before.
 
@@ -20,7 +20,7 @@ And gRPC is a full featured framework. Without the bigger picture, it's easy to 
 ## The bigger picture
 The following is the bigger picture of the server side gRPC call. Compare with client side gRPC call, the server side is more complicated. It's notable that some of the concept are the same for the client side. 
 
-The following diagram discribe the most important goroutines, objects and the interaction between them. In the diagram: 
+The following diagram describe the most important goroutines, objects and the interaction between them. In the diagram: 
 * yellow box represent goroutine, 
 * blue box represent an object, 
 * pink box represent a go channel,
@@ -29,46 +29,46 @@ The following diagram discribe the most important goroutines, objects and the in
 
 ![images.005](../images/images.005.png)
 
-To better understand the diagram, I added the following explaination: 
+To better understand the diagram, I added the following explanation: 
 
-* for each client connection, gRPC server create one ```ServerTransport``` object and start one ```st.HandleStreams()``` goroutine. 
-  * ```ServerTransport``` is an interface, the implemention is ```*http2Server```,
-  * if you have more client connections, there will be more ```ServerTransport``` and ```st.HandleStreams()```,
+* for each client connection, gRPC server create one `ServerTransport` object and start one `st.HandleStreams()` goroutine. 
+  * `ServerTransport` is an interface, the implementation is `*http2Server`,
+  * if you have more client connections, there will be more `ServerTransport` and `st.HandleStreams()`,
   * See [Code Snippet 01](#code-snippet-01) for detail.
-* for eache stream, ```st.HandleStreams()``` goroutine create one ```Stream``` object and start one ```s.handleStream()``` goroutine. 
-  * each ```Stream``` object contains a ```buf``` field,
-  * the ```buf``` field is of type ```*recvBuffer```, which contains a ```c chan recvMsg``` field,  
-  * ```Stream``` object and ```s.handleStream()``` goroutine are created according to gRPC call reqeust,
-  * if one client make several gRPC call reqeusts simultaneously, you will get several ```Stream``` and ```s.handleStream()``` pairs. 
+* for each stream, `st.HandleStreams()` goroutine create one `Stream` object and start one `s.handleStream()` goroutine. 
+  * each `Stream` object contains a `buf` field,
+  * the `buf` field is of type `*recvBuffer`, which contains a `c chan recvMsg` field,  
+  * `Stream` object and `s.handleStream()` goroutine are created according to gRPC call request,
+  * if one client make several gRPC call requests simultaneously, you will get several `Stream` and `s.handleStream()` pairs. 
   * See [Code Snippet 01](#code-snippet-01) and [Code Snippet 02](#code-snippet-02) for detail.
-* at initilization stage, ```ServerTransport``` create one ```t.controlBuf``` object and one ```t.framer.fr``` object and start one ```t.loopy``` goroutine. 
+* at initialization stage, `ServerTransport` create one `t.controlBuf` object and one `t.framer.fr` object and start one `t.loopy` goroutine. 
   * Those objects are created per connection and working together to respond to the request.
   * See [Code Snippet 03](#code-snippet-03) for detail.
-* ```st.HandleStreams()``` uses ```t.framer.fr``` to read http 2 frames from the connection.
-  * if a header frame is read,  ```st.HandleStreams()``` goroutine create one ```Stream``` object and start ```s.handleStream()``` goroutine.
-  * if a data frame is read, ```st.HandleStreams()``` try to write the data frame to ```Stream.buf.c``` channel
+* `st.HandleStreams()` uses `t.framer.fr` to read http 2 frames from the connection.
+  * if a header frame is read,  `st.HandleStreams()` goroutine create one `Stream` object and start `s.handleStream()` goroutine.
+  * if a data frame is read, `st.HandleStreams()` try to write the data frame to `Stream.buf.c` channel
   * See [Code Snippet 01](#code-snippet-01) for detail.
   * See [Request Parameters](parameters.md) for detail.
-* at the same time, ```s.handleStream()``` is processing the header frame and try to read reqeust parameters from channel ```Stream.buf.c```. 
-  * there might be several gRPC request calls simultaneously, in this case, multiple ```s.handleStream()``` goroutines will be started,
+* at the same time, `s.handleStream()` is processing the header frame and try to read request parameters from channel `Stream.buf.c`. 
+  * there might be several gRPC request calls simultaneously, in this case, multiple `s.handleStream()` goroutines will be started,
   * See [Request Parameters](parameters.md) for detail.
-* if ```s.handleStreams()``` goroutine want to send gRPC call response. it need to work with ```t.controlBuf```
-  * both ```t.controlBuf.put()``` and ```t.controlBuf.executeAndPut()``` can be called to send response.
-  * ```*controlBuffer``` is thread safe.
-  * ```*controlBuffer``` is a buffer, it will hold the message temporally until ```t.loopy``` get it.
+* if `s.handleStreams()` goroutine want to send gRPC call response. it need to work with `t.controlBuf`
+  * both `t.controlBuf.put()` and `t.controlBuf.executeAndPut()` can be called to send response.
+  * `*controlBuffer` is thread safe.
+  * `*controlBuffer` is a buffer, it will hold the message temporally until `t.loopy` get it.
   * See [controlBuffer](#controlbuffer) for detail.
-* ```t.loopy``` goroutine get response from ```t.controlBuf``` and send it back via ```t.framer.fr``` 
-  * via ```get()``` provided by ```t.controlBuf```, ```t.loopy``` read respnse from  ```t.controlBuf``` ,
-  * via ```WriteXXX()``` provided by ```t.framer.fr```, ```t.loopy``` encode the response and send it back to client ,
+* `t.loopy` goroutine get response from `t.controlBuf` and send it back via `t.framer.fr` 
+  * via `get()` provided by `t.controlBuf`, `t.loopy` read response from  `t.controlBuf` ,
+  * via `WriteXXX()` provided by `t.framer.fr`, `t.loopy` encode the response and send it back to client ,
   * See [loopWriter](#loopwriter) for detail.
-* ```t.framer.fr``` is in charge of read/write http 2 frames from/to the wire.
-  * it's get initilized when the connection is created.
-  * ```Framer``` is of type ```*http2.Framer```. 
+* `t.framer.fr` is in charge of read/write http 2 frames from/to the wire.
+  * it's get initialized when the connection is created.
+  * `Framer` is of type `*http2.Framer`. 
   * See [Frame](#frame) for detail.
 
 
 ### Code snippet 01
-Upon receive a connection request, gRPC create a ```ServerTransport``` object ```st``` and start a goroutine ```s.serveStreams(st)``` to serve it.
+Upon receive a connection request, gRPC create a `ServerTransport` object `st` and start a goroutine `s.serveStreams(st)` to serve it.
 ```go
 
 // handleRawConn forks a goroutine to handle a just-accepted connection that
@@ -101,7 +101,7 @@ func (s *Server) handleRawConn(rawConn net.Conn) {
 }
 ```
 
-```s.serveStreams()``` calls ```st.HandleStreams()``` to do th job. The for loop of ```st.HandleStreams()``` will last until the connection close or some error happens. 
+`s.serveStreams()` calls `st.HandleStreams()` to do th job. The for loop of `st.HandleStreams()` will last until the connection close or some error happens. 
 
 ```go
 func (s *Server) serveStreams(st transport.ServerTransport) {
@@ -178,9 +178,9 @@ func (t *http2Server) HandleStreams(handle func(*Stream), traceCtx func(context.
  
 ```
 ### Code snippet 02
-Upon receive the gRPC call request header, ```HandleStreams()``` calls ```t.operateHeaders()```, which create the ```Stream``` object ```s``` and start a goroutine ```s.handleStream()``` to process that stream. 
+Upon receive the gRPC call request header, `HandleStreams()` calls `t.operateHeaders()`, which create the `Stream` object `s` and start a goroutine `s.handleStream()` to process that stream. 
 
-In ```newRecvBuffer()``` , a ```*recvBuffer``` will be created and assigned to ```Stream.buf```. ```*recvBuffer``` has a field ```c chan recvMsg```. 
+In `newRecvBuffer()` , a `*recvBuffer` will be created and assigned to `Stream.buf`. `*recvBuffer` has a field `c chan recvMsg`. 
 
 ```go
 // operateHeader takes action on the decoded headers.
@@ -258,11 +258,11 @@ func newRecvBuffer() *recvBuffer {
 
 ```
 ### Code snippet 03
-```newHTTP2Transport()``` calls  ```transport.NewServerTransport()```, which calls ```newHTTP2Server()```. 
-* In ```newHTTP2Server()```, ```newFramer()``` create a ```framer``` and assign it to ```http2Server.framer```.  
-* In ```newHTTP2Server()```, ```newControlBuffer()``` create a ```*controlBuffer``` and assign it to ```http2Server.controlBuf```.  
-* In ```newFramer()```, ```t.framer.fr``` is initilized by ```http2.NewFramer()```.
-* At the end of ```newHTTP2Transport()```, it creates ```t.loopy``` with ```newLoopyWriter()``` and start a ```t.loopy``` goroutine.
+`newHTTP2Transport()` calls  `transport.NewServerTransport()`, which calls `newHTTP2Server()`. 
+* In `newHTTP2Server()`, `newFramer()` create a `framer` and assign it to `http2Server.framer`.  
+* In `newHTTP2Server()`, `newControlBuffer()` create a `*controlBuffer` and assign it to `http2Server.controlBuf`.  
+* In `newFramer()`, `t.framer.fr` is initialized by `http2.NewFramer()`.
+* At the end of `newHTTP2Transport()`, it creates `t.loopy` with `newLoopyWriter()` and start a `t.loopy` goroutine.
 
 ```go
 // newHTTP2Transport sets up a http/2 transport (using the                                                                                                   
@@ -392,15 +392,16 @@ func newFramer(conn net.Conn, writeBufferSize, readBufferSize int, maxHeaderList
 }                                             
 ```
 ## controlBuffer
-From the bigger picture, the ```controlBuffer``` is the buffer when you wan to send message to ```loopy```. Specifically speaking the buffer is the ```list *itemList```. ```controlBuffer``` can be initilized by ```newControlBuffer()```. 
+
+From the bigger picture, the `controlBuffer` is the buffer when you wan to send message to `loopy`. Specifically speaking the buffer is the `list *itemList`. `controlBuffer` can be initialized by `newControlBuffer()`. 
 
 ### Component
-* ```mu sync.Mutex``` is used to protect the ```list *itemList```
-* ```list *itemList``` is a normal linked list. It's the buffer to temporally store the message.
-* ```ch chan struct{}``` and ```consumerWaiting bool``` is used for the bloking read mode. see [Get and Put](#get-and-put) for detail.
-* ```done <-chan struct{}``` is used for the stop operation.
-* ```transportResponseFrames int``` and ```trfChan atomic.Value``` is used for threshold. see [Threshold](#threshold) for detail.
-* ```atomic.Value``` provides an atomic load and store of a consistently typed value. see [official doc](https://golang.org/pkg/sync/atomic/#Value) for detail.
+* `mu sync.Mutex` is used to protect the `list *itemList`
+* `list *itemList` is a normal linked list. It's the buffer to temporally store the message.
+* `ch chan struct{}` and `consumerWaiting bool` is used for the blocking read mode. see [Get and Put](#get-and-put) for detail.
+* `done <-chan struct{}` is used for the stop operation.
+* `transportResponseFrames int` and `trfChan atomic.Value` is used for threshold. see [Threshold](#threshold) for detail.
+* `atomic.Value` provides an atomic load and store of a consistently typed value. see [official doc](https://golang.org/pkg/sync/atomic/#Value) for detail.
 
 ```go
 // controlBuffer is a way to pass information to loopy.                                                                    
@@ -474,16 +475,16 @@ func (il *itemList) dequeue() interface{} {
 ```
 
 ### Get and Put
-Under the protection of ```mu```, ```put()``` and ```executeAndPut()``` store the item in buffer ```c.list```.
-* counts ```c.transportResponseFrames```, if the buffer size exceed ```maxQueuedTransportResponseFrames```, create a throttling channel, 
-* compare with ```put()```, ```executeAndPut()``` add a extra step: try to execute the ```f func(it interface{}) bool``` before the put action,
-* if ```c.consumerWaiting``` is true,  send the the signal (```struct{}{}```) to ```c.ch```, to wake up the get operation. After that the blocked read operation can continue now.
+Under the protection of `mu`, `put()` and `executeAndPut()` store the item in buffer `c.list`.
+* counts `c.transportResponseFrames`, if the buffer size exceed `maxQueuedTransportResponseFrames`, create a throttling channel, 
+* compare with `put()`, `executeAndPut()` add a extra step: try to execute the `f func(it interface{}) bool` before the put action,
+* if `c.consumerWaiting` is true,  send the signal (`struct{}{}`) to `c.ch`, to wake up the get operation. After that the blocked read operation can continue now.
 
-Also under the protection of ```mu```, ```get()``` fetch the item from buffer ```c.list```.
-* count down ```c.transportResponseFrames```, if the buffer size less than ```maxQueuedTransportResponseFrames```, close the throttling channel,
-* if run in blocking mode, ```block``` parameter is true, if the buffer is empty, ```get()``` will wait signal from ```c.ch```, until ```put()``` send the signal.
+Also under the protection of `mu`, `get()` fetch the item from buffer `c.list`.
+* count down `c.transportResponseFrames`, if the buffer size less than `maxQueuedTransportResponseFrames`, close the throttling channel,
+* if run in blocking mode, `block` parameter is true, if the buffer is empty, `get()` will wait signal from `c.ch`, until `put()` send the signal.
 
-In general, ```*controlBuffer``` is thread safe. 
+In general, `*controlBuffer` is thread safe. 
 
 ```go
 // maxQueuedTransportResponseFrames is the most queued "transport response"
@@ -593,9 +594,9 @@ func (c *controlBuffer) execute(f func(it interface{}) bool, it interface{}) (bo
 
 ### Threshold
 
-User of ```controlBuffer``` need to explicitly call ```throttle()``` to make the threshold control work. if ```c.trfChan``` is not nil, ```throttle()``` will wait, until the threshhold released. 
+User of `controlBuffer` need to explicitly call `throttle()` to make the threshold control work. if `c.trfChan` is not nil, `throttle()` will wait, until the threshold released. 
 
-Here we show some code snippet from ```HandleStreams()```. It's the typical use case for ```t.controlBuf.throttle() ```.
+Here we show some code snippet from `HandleStreams()`. It's the typical use case for `t.controlBuf.throttle() `.
 
 ```go
 // throttle blocks if there are too many incomingSettings/cleanupStreams in the
@@ -626,23 +627,23 @@ func (t *http2Server) HandleStreams(handle func(*Stream), traceCtx func(context.
 
 ```
 ## loopyWriter
-From the bigger picture, the ```loopyWriter``` is the goroutine which is incharge of the sending data back to client. It is one ```loopyWriter``` goroutine per connection. ```loopyWriter``` get HTTP frames from ```*controlBuffer``` and send them to client via ```framer```. 
+From the bigger picture, the `loopyWriter` is the goroutine which is in charge of the sending data back to client. It is one `loopyWriter` goroutine per connection. `loopyWriter` get HTTP frames from `*controlBuffer` and send them to client via `framer`. 
 
-In ```*controlBuffer``` frames just stored in a buffer list, while in ```loopyWriter``` frames are grouped by stream ID and saved in the sending order
+In `*controlBuffer` frames just stored in a buffer list, while in `loopyWriter` frames are grouped by stream ID and saved in the sending order
 
-```loopyWriter``` is initialized by ```newLoopyWriter()```, which is called in ```newHTTP2Server()```.
+`loopyWriter` is initialized by `newLoopyWriter()`, which is called in `newHTTP2Server()`.
 
 ### Component
-* ```cbuf``` is the ```*controlBuffer```, which is used to read frames. see [controlBuffer](#controlbuffer) for more detail.
-* ```framer``` is the ```*framer```, which is used to send data back to client. see [framer](#framer) for more detail.
-* ```estdStreams``` is map of all established streams that are not cleaned-up yet. see bellow for detail.
-* ```activeStreams``` is a linked-list of all streams that have data to send and some stream-level flow control quota. see bellow for detail.
-* ```outStream``` and ```outStreamList``` are normal data structure for streams grouping.
+* `cbuf` is the `*controlBuffer`, which is used to read frames. see [controlBuffer](#controlbuffer) for more detail.
+* `framer` is the `*framer`, which is used to send data back to client. see [framer](#framer) for more detail.
+* `estdStreams` is map of all established streams that are not cleaned-up yet. see bellow for detail.
+* `activeStreams` is a linked-list of all streams that have data to send and some stream-level flow control quota. see bellow for detail.
+* `outStream` and `outStreamList` are normal data structure for streams grouping.
 * the above fields are the focus of our discussion. others are not touched.
-* ```side``` is used to identify loopy is run in client mode or server mode.
-* ```sendQuota``` and ```oiws``` and ```bdpEst``` are used for flow control (stream-level and connection-level).
-* ```hBuf``` and ```hEnc``` are used for HPACK encoding.
-* ```ssGoAwayHandler``` and ```draining``` are used for stream close.
+* `side` is used to identify loopy is run in client mode or server mode.
+* `sendQuota` and `oiws` and `bdpEst` are used for flow control (stream-level and connection-level).
+* `hBuf` and `hEnc` are used for HPACK encoding.
+* `ssGoAwayHandler` and `draining` are used for stream close.
 
 ```go
 // Loopy receives frames from the control buffer.
@@ -785,23 +786,23 @@ func (l *outStreamList) dequeue() *outStream {
 
 ### handle 
 
-```handle``` is a frame classifier. Every individual frame is processed by type. Let's discuss the processing of some important frame type. We will discuss 
+`handle` is a frame classifier. Every individual frame is processed by type. Let's discuss the processing of some important frame type. We will discuss 
 
-* ```registerStream```, ```cleanupStream```, ```headerFrame``` - these frame type are related with ```estdStreams```, 
-* ```dataFrame```, ```incomingSettings``` and ```incomingWindowUpdate``` - these frame type are related with ```activeStreams```,
+* `registerStream`, `cleanupStream`, `headerFrame` - these frame type are related with `estdStreams`, 
+* `dataFrame`, `incomingSettings` and `incomingWindowUpdate` - these frame type are related with `activeStreams`,
 
 Other frame type is not our focus. We will not touch them. Let's begin: 
 
-* ```registerStream```:
-  * this is a special frame used for ```loopyWriter``` internal state.
-  * ```l.registerStreamHandler()``` create an ```outStream``` object and add it to ```l.estdStreams```.
-  * that means ```l.registerStreamHandler()``` register this stream in ```l.estdStreams```. It's ready for process the upcomming stream frames.
-* ```cleanupStream```:
-  * this is a special frame used for ```loopyWriter``` internal state. 
-  * ```l.cleanupStreamHandler()``` remove and delete the spcified stream from ```l.estdStreams```.
-  * if needed it also writes a RST_STREAM frame to the client by call ```l.framer.fr.WriteRSTStream()````.
+* `registerStream`:
+  * This is a special frame used for `loopyWriter` internal state.
+  * `l.registerStreamHandler()` create an `outStream` object and add it to `l.estdStreams`.
+  * That means `l.registerStreamHandler()` register this stream in `l.estdStreams`. It's ready for process the upcoming stream frames.
+* `cleanupStream`:
+  * this is a special frame used for `loopyWriter` internal state. 
+  * `l.cleanupStreamHandler()` remove and delete the specified stream from `l.estdStreams`.
+  * if needed it also writes a `RST_STREAM` frame to the client by call `l.framer.fr.WriteRSTStream()`.
 
-there is still more frame type discussion, see bellow.
+There is still more frame type discussion, see bellow.
 
 ```go
 func (l *loopyWriter) handle(i interface{}) error {                                                                       
@@ -867,19 +868,20 @@ func (l *loopyWriter) cleanupStreamHandler(c *cleanupStream) error {
 }                                                              
 
 ```
-* ```headerFrame```:
-  * this is the response header frame. ```*http2Server.writeHeaderLocked()``` can send the ```headerFrame``` to ``` t.controlBuf```
-  * in ```l.headerHandler()``` we only discuss the server side behavior to keep our focus.
-  * ```l.headerHandler()``` find the stream form ```l.estdStreams``` by stream ID.
-  * if it's the first response header frame, call ```l.writeHeader()``` to write the frame back to client.  
-    * ```l.writeHeader()``` will write HTTP header frame and continuation frames to meet the HTTP frame size limitation. 
-    * ```l.writeHeader()``` uses ```l.hBuf```, ```l.hEnc``` to perform HPACK encoding.
-    * ```l.writeHeader()``` uses ```l.framer.fr.WriteHeaders()``` and ```l.framer.fr.WriteContinuation()``` to write header and continuation frames.
-  * if it's the trailer frame and stream state is not empty, ```l.headerHandler()``` puts it in stream sending queue (```str.itl.enqueue(h)```).
-  * if the stream state is empty, ```l.headerHandler()``` call ```l.writeHeader()``` to write the frame back to client. 
-  * if the stream state is empty, call ```l.cleanupStreamHandler``` to clean the stream.
 
-there is still more type discussion, see bellow.
+* `headerFrame`:
+  * this is the response header frame. `*http2Server.writeHeaderLocked()` can send the `headerFrame` to ` t.controlBuf`
+  * in `l.headerHandler()` we only discuss the server side behavior to keep our focus.
+  * `l.headerHandler()` find the stream form `l.estdStreams` by stream ID.
+  * If it's the first response header frame, call `l.writeHeader()` to write the frame back to client.  
+    * `l.writeHeader()` will write HTTP header frame and continuation frames to meet the HTTP frame size limitation. 
+    * `l.writeHeader()` uses `l.hBuf`, `l.hEnc` to perform HPACK encoding.
+    * `l.writeHeader()` uses `l.framer.fr.WriteHeaders()` and `l.framer.fr.WriteContinuation()` to write header and continuation frames.
+  * If it's the trailer frame and stream state is not empty, `l.headerHandler()` puts it in stream sending queue `str.itl.enqueue(h)`.
+  * If the stream state is empty, `l.headerHandler()` call `l.writeHeader()` to write the frame back to client. 
+  * If the stream state is empty, call `l.cleanupStreamHandler` to clean the stream.
+
+There is still more type discussion, see bellow.
 
 ```go
 func (l *loopyWriter) headerHandler(h *headerFrame) error {                                                                                                     
@@ -1017,13 +1019,13 @@ type headerFrame struct {
   
 ```
 
-* ```dataFrame```:
-  * this is the response data frame. ```*http2Server.Write()``` can send the ```dataFrame``` to ``` t.controlBuf```
-  * ```preprocessData()``` finds the stream from ```l.estdStreams```
-  * ```preprocessData()``` puts it in stream sending queue: ```str.itl.enqueue(df)```. 
-  * if the stream state is ```empty```, change it to ```active``` and put the steram in the active stream queue ```l.activeStreams.enqueue(str)```
+* `dataFrame`:
+  * this is the response data frame. `*http2Server.Write()` can send the `dataFrame` to ` t.controlBuf`
+  * `preprocessData()` finds the stream from `l.estdStreams`
+  * `preprocessData()` puts it in stream sending queue: `str.itl.enqueue(df)`. 
+  * if the stream state is `empty`, change it to `active` and put the stream in the active stream queue `l.activeStreams.enqueue(str)`
 
-there is still more type discussion, see bellow.
+There is still more type discussion, see bellow.
 
 ```go
 func (l *loopyWriter) preprocessData(df *dataFrame) error {    
@@ -1095,13 +1097,13 @@ type dataFrame struct {
 func (*dataFrame) isTransportResponseFrame() bool { return false }                                                                                                   
 ```
 
-* ```incomingSettings```:
-  * when gRPC receive the ```http2.SettingsFrame```, ```*http2Server.handleSettings()``` send the ```incomingSettings``` frame to ```t.controlBuf```
-  * upon receive ```incomingSettings```, ```incomingSettingsHandler()``` first apply the settings via call ```l.applySettings()```
-  * ```l.applySettings()``` will change the stream state to active, if the new limit is greater than current value.
-  * then ```incomingSettingsHandler()``` call ```l.framer.fr.WriteSettingsAck()``` to write an empty SETTINGS frame with the ACK bit set.
+* `incomingSettings`:
+  * When gRPC receive the `http2.SettingsFrame`, `*http2Server.handleSettings()` send the `incomingSettings` frame to `t.controlBuf`
+  * Upon receive `incomingSettings`, `incomingSettingsHandler()` first apply the settings via call `l.applySettings()`
+  * `l.applySettings()` will change the stream state to active, if the new limit is greater than current value.
+  * Then `incomingSettingsHandler()` call `l.framer.fr.WriteSettingsAck()` to write an empty SETTINGS frame with the ACK bit set.
 
-there is still more type discussion, see bellow.
+There is still more type discussion, see bellow.
 
 ```go
 func (l *loopyWriter) incomingSettingsHandler(s *incomingSettings) error {
@@ -1167,12 +1169,12 @@ func (l *loopyWriter) applySettings(ss []http2.Setting) error {
     return nil                                                                                                                                                  
 }                                                                                                                                       
 ```
-* ```incomingWindowUpdate```:
-  * when gRPC receive the ```http2.WindowUpdateFrame```, ```*http2Server.handleWindowUpdate()``` send the ```incomingWindowUpdate``` frame to ```t.controlBuf```
-  * upon receive ```incomingWindowUpdate```, if stream id is 0, then ```incomingWindowUpdateHandler()``` update the quota,
-  * otherwise ```incomingWindowUpdateHandler()``` find the stream and update the stream state. 
+* `incomingWindowUpdate`:
+  * when gRPC receive the `http2.WindowUpdateFrame`, `*http2Server.handleWindowUpdate()` send the `incomingWindowUpdate` frame to `t.controlBuf`
+  * upon receive `incomingWindowUpdate`, if stream id is 0, then `incomingWindowUpdateHandler()` update the quota,
+  * otherwise `incomingWindowUpdateHandler()` find the stream and update the stream state. 
 
-Now you understand what does ```handle()``` do. Let's move our focus to active stream proccessing.
+Now you understand what does `handle()` do. Let's move our focus to active stream processing.
 
 ```go
 func (l *loopyWriter) incomingWindowUpdateHandler(w *incomingWindowUpdate) error {
@@ -1211,28 +1213,28 @@ func (*incomingWindowUpdate) isTransportResponseFrame() bool { return false }
 
 ### processData
 
-```processData()``` focus on the processing of ```activeStreams```. The comments for ```processData()``` is correct but a simple version. Let's show the full version
+`processData()` focus on the processing of `activeStreams`. The comments for `processData()` is correct but a simple version. Let's show the full version
 * first check the connection level send quota, if quota is 0, nothing to do except return.
-* if the ```activeStreams``` is empty, means no active stream, then nothing to do except return.
-* ```l.activeStreams.dequeue()``` remove the first stream from  ```activeStreams``` and assign the stream to ```str```,
-* ```peek()``` the first ```dataItem``` (here use peek to avoid partial send case, in that case, we still need to send the ramains parts)
-* for empty data frame, ```len(dataItem.h) == 0 && len(dataItem.d) == 0``` is true
-  * use ```l.framer.fr.WriteData()``` to send the data back, then remove the empty data item from stream. in this case, ```peek()``` is useless.
-  * if the ```str.itl.isEmpty()``` is ture, set the ```str.state = empty```
-  * if the next ```peek()``` is trailers, call ```l.writeHeader()``` to send the trailer back. then call ```l.cleanupStreamHandler()``` to clear the stream,
-  * if ```str.itl.isEmpty()``` is false and next frame is not trailer, that means if there's still more data, puts ```str``` at the end of activeStreams. 
+* if the `activeStreams` is empty, means no active stream, then nothing to do except return.
+* `l.activeStreams.dequeue()` remove the first stream from  `activeStreams` and assign the stream to `str`,
+* `peek()` the first `dataItem` (here use peek to avoid partial send case, in that case, we still need to send the remains parts)
+* for empty data frame, `len(dataItem.h) == 0 && len(dataItem.d) == 0` is true
+  * use `l.framer.fr.WriteData()` to send the data back, then remove the empty data item from stream. in this case, `peek()` is useless.
+  * if the `str.itl.isEmpty()` is true, set the `str.state = empty`
+  * if the next `peek()` is trailers, call `l.writeHeader()` to send the trailer back. then call `l.cleanupStreamHandler()` to clear the stream,
+  * if `str.itl.isEmpty()` is false and next frame is not trailer, that means if there's still more data, puts `str` at the end of `activeStreams`. 
 * for non-empty data frame
-  * figure out the maximum size we can send. consider the stream-level flow control and connection-level flow control, compute the ```maxSize``` 
-  * compute how much of the header and data we can send. ```hSzie``` is the send header size, ```dSize``` is the data size, ```buf``` is the data we can send.
-  * call ```l.framer.fr.WriteData()``` to send ```buf[:size]``` data.
-  * compute the ```str.bytesOutStanding``` and ```l.sendQuota```, remove the sent part data: including ```dataItem.h``` and ```dataItem.d```
-  * if all the whole ```dataItem``` is sent, remove it via ```str.itl.dequeue() ```
-  * if the ```str.itl.isEmpty()``` is ture, set the ```str.state = empty``` 
-  * if the next ```peek()``` is trailers, call ```l.writeHeader()``` to send the trailer back. then call ```l.cleanupStreamHandler()``` to clear the stream, 
-  * if run out of stream quota ``` int(l.oiws)-str.bytesOutStanding <= 0``` , then set set stream state to ```waitingOnStreamQuota```
-  * otherwise add the ```str``` back to the list of active streams ```l.activeStreams.enqueue(str)```
+  * figure out the maximum size we can send. consider the stream-level flow control and connection-level flow control, compute the `maxSize` 
+  * compute how much of the header and data we can send. `hSzie` is the send header size, `dSize` is the data size, `buf` is the data we can send.
+  * call `l.framer.fr.WriteData()` to send `buf[:size]` data.
+  * compute the `str.bytesOutStanding` and `l.sendQuota`, remove the sent part data: including `dataItem.h` and `dataItem.d`
+  * if all the whole `dataItem` is sent, remove it via `str.itl.dequeue() `
+  * if the `str.itl.isEmpty()` is true, set the `str.state = empty` 
+  * if the next `peek()` is trailers, call `l.writeHeader()` to send the trailer back. then call `l.cleanupStreamHandler()` to clear the stream, 
+  * if run out of stream quota ` int(l.oiws)-str.bytesOutStanding <= 0` , then set set stream state to `waitingOnStreamQuota`
+  * otherwise add the `str` back to the list of active streams `l.activeStreams.enqueue(str)`
 
-Let's see the comments of ```processData()```. Now you can fully understand what it means.
+Let's see the comments of `processData()`. Now you can fully understand what it means.
 
 ```go
 // processData removes the first stream from active streams, writes out at most 16KB                                                                              
@@ -1347,18 +1349,18 @@ func (l *loopyWriter) processData() (bool, error) {
 ```
 ### run
 
-Now we have discussed the features of [handle](#handle) and [processData](#processdata). It's time to put them together. ```run()``` is the core of ```loopyWriter``` goroutine. The following code comment is good enough to understand. There are several things deserved to mention. It can help you to fully understand ```run()```
-* for block read ```get(true)``` and non-block read ```get(false)```, plesse refer to [Get and Put](#get-and-put)
-* in [handle](#handle), we mentioned that ```dataFrame```, ```incomingSettings``` and ```incomingWindowUpdate``` are related with active streams. 
+Now we have discussed the features of [handle](#handle) and [processData](#processdata). It's time to put them together. `run()` is the core of `loopyWriter` goroutine. The following code comment is good enough to understand. There are several things deserved to mention. It can help you to fully understand `run()`
+* for block read `get(true)` and non-block read `get(false)`, please refer to [Get and Put](#get-and-put)
+* in [handle](#handle), we mentioned that `dataFrame`, `incomingSettings` and `incomingWindowUpdate` are related with active streams. 
   * that is why we introduce these control frames, please see them again to known how to change the active stream list.
   * please note [processData](#processdata) itself also changed active stream list
-* the return value of ```processData()```, if ```isEmpty``` is ture, means ```processdata()``` do nothing to the active stream.
+* the return value of `processData()`, if `isEmpty` is true, means `processdata()` do nothing to the active stream.
   * we already cover it in the head of [processData](#processdata)
-* ```loopyWriter``` share its life with ```controlBuf``` and ```http2Server```, 
-  * both of them share the same ```done``` channel. see [Code snippet 02](#code-snippet-03) ```newHTTP2Server()``` for done channel initilization,   
-  * when receive signal from ```done``` channel, block read ```get(true)``` will stop and return ```ErrConnClosing```, see [Get and Put](#get-and-put) for detail. 
-  * after receive the ```ErrConnClosing```, ```run()``` stops.
-  * plase note the difference between ```break hasdata``` and ```continue hasdata```.
+* `loopyWriter` share its life with `controlBuf` and `http2Server`, 
+  * both of them share the same `done` channel. see [Code snippet 02](#code-snippet-03) `newHTTP2Server()` for done channel initialization,   
+  * when receive signal from `done` channel, block read `get(true)` will stop and return `ErrConnClosing`, see [Get and Put](#get-and-put) for detail. 
+  * after receive the `ErrConnClosing`, `run()` stops.
+  * Please note the difference between `break hasdata` and `continue hasdata`.
 
 ```go
 // run should be run in a separate goroutine.
@@ -1441,23 +1443,23 @@ func (l *loopyWriter) run() (err error) {
 ```
 
 ## framer
-```framer``` is a struct. ```newFramer``` builds a ```*framer``` object. I think it decorates the ```http2.NewFramer()``` by add read/write buffer capability. 
+`framer` is a struct. `newFramer` builds a `*framer` object. I think it decorates the `http2.NewFramer()` by add read/write buffer capability. 
 
-From the function body of ```newFramer``` you can understand what it is:
-* use ```bufio.NewReaderSize()``` and ```conn``` to build a ```r``` object, thus add the buffer capability to ```conn```,
-* use ```newBufWriter()``` and ```conn``` to build a ```w``` object, thus add the buffer capability to ```conn```,
-* ```*bufWriter``` is a simple buffer writer, it implements ```io.Writer``` interface. with addtional ```Flush()``` method,
-* ```fr``` is initilized by ```http2.NewFramer()```, using the just created ```w``` and ```r```, which means ```fr``` is using the bufferd ```Reader``` and ```Writer```
-* actually, the most functionality of ```framer``` is provided by ```http2.Framer```. It provides a lot of method to read/write frame data. Such as ```WriteHeaders()```, ```WriteData()```, ```ReadFrame()``` etc.
-* we will not discuss the implementation of ```http2.NewFramer()```, it's out of our scope. see [offical document](https://pkg.go.dev/golang.org/x/net/http2) for more detail.
+From the function body of `newFramer` you can understand what it is:
+* use `bufio.NewReaderSize()` and `conn` to build a `r` object, thus add the buffer capability to `conn`,
+* use `newBufWriter()` and `conn` to build a `w` object, thus add the buffer capability to `conn`,
+* `*bufWriter` is a simple buffer writer, it implements `io.Writer` interface. with additional `Flush()` method,
+* `fr` is initialized by `http2.NewFramer()`, using the just created `w` and `r`, which means `fr` is using the buffered `Reader` and `Writer`
+* actually, the most functionality of `framer` is provided by `http2.Framer`. It provides a lot of method to read/write frame data. Such as `WriteHeaders()`, `WriteData()`, `ReadFrame()` etc.
+* we will not discuss the implementation of `http2.NewFramer()`, it's out of our scope. see [official document](https://pkg.go.dev/golang.org/x/net/http2) for more detail.
 
-The only limitation of ```framer``` is the user need to call ```framer.writer.Flush()``` to clean the writer buffer. 
+The only limitation of `framer` is the user need to call `framer.writer.Flush()` to clean the writer buffer. 
 
 There are two questions confuse me:
-* ```http2.NewFramer()``` already has the read buffer ```readBuf  []byte``` , why use ```bufio.Reader```? 
-* ```http2.NewFramer()``` also has the write buffer ```wbuf []byte```, why use ```bufWriter```?
+* `http2.NewFramer()` already has the read buffer `readBuf  []byte` , why use `bufio.Reader`? 
+* `http2.NewFramer()` also has the write buffer `wbuf []byte`, why use `bufWriter`?
 
-Anyway, the buffered ```w``` and ```r``` are still working. That's the most important.
+Anyway, the buffered `w` and `r` are still working. That's the most important.
 
 ```go
 type framer struct {                                                                                                                                  
