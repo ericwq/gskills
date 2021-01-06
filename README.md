@@ -7,6 +7,11 @@ Gradually, as more chapter finished, it becomes "Understanding gRPC-go". All con
 Get a quick glimpse from the following diagram. See  [Balancer and Resolver API](docs/dial.md#balancer-and-resolver-api) for detail.
 ![images.008](images/images.008.png)
 
+## Status
+- currently reading the Envoy document, preparing for the xDS chapter.
+- `Send Request` need review because I learn more from `Client Dial` and `Load Balancing` chapters
+- `Send Response` also need review to update the diagram
+
 ## Content 
 
 ### [Client Dial](docs/dial.md)
