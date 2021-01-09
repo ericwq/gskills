@@ -9,7 +9,7 @@ Get a quick glimpse from the following diagram. See  [Balancer and Resolver API]
 
 ## Status
 - currently reading the Envoy document, preparing for the xDS chapter.
-- `Send Request` need review because I learn more from `Client Dial` and `Load Balancing` chapters
+- `Send Request` needs review because I learn more from `Client Dial` and `Load Balancing` chapters
 - `Send Response` also need review to update the diagram
 
 ## Content 
@@ -88,7 +88,7 @@ Get a quick glimpse from the following diagram. See  [Balancer and Resolver API]
 
 
 ## Reading material
-The following books help me building a solid foundation for [http2](https://tools.ietf.org/html/rfc7540) and [gRPC](https://www.grpc.io/docs/). They answer a lot of questions about Why ,What and some part of How, while `gSkills` purely focus on How to implement them in gRPC.
+The following books help me to build a solid foundation for [http2](https://tools.ietf.org/html/rfc7540) and [gRPC](https://www.grpc.io/docs/). They answer a lot of questions about Why, What and some part of How, while `gSkills` purely focus on How to implement them in gRPC.
 
 - HTTP2
   - [Learning HTTP/2](https://www.oreilly.com/library/view/learning-http2/9781491962435/)
