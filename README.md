@@ -2,7 +2,7 @@
 
 My original goal is to understand the source code of [gRPC-go](https://github.com/grpc/grpc-go). When researching the source code, I found a lot of coding skills/design which deserved to be noted for later reference. 
 
-Gradually, as more chapter finished, it becomes "Understanding gRPC-go". All content are golang and gRPC-go related. 
+Gradually, as more chapter finished, it becomes "Understanding gRPC-go": the code analysis book. All content are golang and gRPC-go related. 
 
 Get a quick glimpse from the following diagram. See  [Balancer and Resolver API](docs/dial.md#balancer-and-resolver-api) for detail.
 ![images.008](images/images.008.png)
@@ -88,14 +88,14 @@ Get a quick glimpse from the following diagram. See  [Balancer and Resolver API]
 
 
 ## Reading material
-The following books help me to build a solid foundation for [http2](https://tools.ietf.org/html/rfc7540) and [gRPC](https://www.grpc.io/docs/). They answer a lot of questions about Why, What and some part of How, while `gSkills` purely focus on How to implement them in gRPC.
+The following books help me to build a solid foundation for [HTTP2](https://tools.ietf.org/html/rfc7540) and [gRPC](https://www.grpc.io/docs/). They answer a lot of questions about Why, What and some part of How, while `gSkills` purely focus on How to implement them in gRPC.
 
 - HTTP2
   - [Learning HTTP/2](https://www.oreilly.com/library/view/learning-http2/9781491962435/)
   - [HTTP/2 in Action](https://www.manning.com/books/http2-in-action?query=http2)
 - gRPC
   - [gRPC: Up and Running](https://www.oreilly.com/library/view/grpc-up-and/9781492058328/)
-  - [gPRC doc](https://github.com/grpc/grpc/tree/master/doc)
+  - [gRPC doc](https://github.com/grpc/grpc/tree/master/doc)
 
 The following articles are very helpful to understand [envoy](http://envoyproxy.io). The official [Introduction](https://www.envoyproxy.io/docs/envoy/v1.16.0/intro/intro) is not easy to understand, full of terminology, too much details to easily get distracted.
 - Envoy introduction
