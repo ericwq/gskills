@@ -86,6 +86,7 @@ Get a quick glimpse from the following diagram. See  [Balancer and Resolver API]
   - [UpdateSubConnState()](docs/load.md#updatesubconnstate)
   - [newAttemptLocked()](docs/load.md#newattemptlocked)
 
+### [xDS protocol support](docs/xds.md)
 
 ## Reading material
 The following books help me to build a solid foundation for [HTTP2](https://tools.ietf.org/html/rfc7540) and [gRPC](https://www.grpc.io/docs/). They answer a lot of questions about Why, What and some part of How, while `gSkills` purely focus on How to implement them in gRPC.
