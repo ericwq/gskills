@@ -1,4 +1,5 @@
 # Client Dial
+
 - [Balancer and Resolver API](#balancer-and-resolver-api)
 - [Dial process part I](#dial-process-part-i)
   - [newCCResolverWrapper()](#newccresolverwrapper)
@@ -15,7 +16,8 @@ Client dial is the process to establish the connection with the target server. H
 In this discussion, we will use the `passthrough` resolver and `pickfirst` balancer. They are the default resolver and balancer. For other resolver and balancer, The dial procees is similar with little difference.
 
 ## Balancer and Resolver API
-There is an [official design document](https://github.com/grpc/proposal/blob/master/L9-go-resolver-balancer-API.md) about the resolver and balancer API. But it's a little bit older than the code. The following diagram is made from the recent souce code. 
+
+There is an [official design document](https://github.com/grpc/proposal/blob/master/L9-go-resolver-balancer-API.md) about the resolver and balancer API. But it's a little bit older than the code. The following diagram is made from the recent souce code.
 
 Resolver watches for the updates on the specified target. Updates include address updates and service config updates. There is also a `resolver.ClientConn` interface which contains the callbacks for resolver to notify any updates to the gRPC ClientConn. `resolver.Builder` intercase creates a resolver that will be used to watch name resolution updates. There is a resolver map stores all the registered resolver builders.
 
@@ -27,7 +29,9 @@ Balancer takes input from gRPC, manages SubConns, collects and aggregates the co
 ![Balancer and Resolver API](../images/images.008.png)
 
 ## Dial process part I
+
 `Dial` is a complex process. The following diagram is a map to prevent you from losting in a mass of code. I did lost many times. And this is only part I. Yes, there is part II.
+
 - yellow box represents the important type and method/funciton.
 - green box represents a function run in a dedicated goroutine.
 - dash box represents the important type/struct in our previouse API diagram.
@@ -69,21 +73,22 @@ func main() {
     callUnaryEcho(rgc, "hello world")
 }
 ```
+
 ### newCCResolverWrapper()
 
-- Client application calls `Dial()` . 
+- Client application calls `Dial()` .
 - `Dial()` calls `DialContext()`
 - In our case, the default resolver is `passthrough` Because the `cc.parsedTarget.Scheme` is empty string.
-- `DialContext()` calls `newCCResolverWrapper()` 
+- `DialContext()` calls `newCCResolverWrapper()`
   - gRPC provide dns resolver, unix resolver, passthrough resolver, xds resolver
-  - by default, gRPC registers three resovler: dns, unix and passthrough resolver 
-- After creates the `ccResolverWrapper` `DialContext()` will 
+  - by default, gRPC registers three resovler: dns, unix and passthrough resolver
+- After creates the `ccResolverWrapper` `DialContext()` will
   - just return for non-blocking dial,
-  - or  wait the state changing for a blocking dial 
-  - for blocking dial mode, 
-    - in the for loop, `cc.GetState()` and `cc.WaitForStateChange()` working together to monitor the state of `csMgr    *connectivityStateManager` 
+  - or  wait the state changing for a blocking dial
+  - for blocking dial mode,
+    - in the for loop, `cc.GetState()` and `cc.WaitForStateChange()` working together to monitor the state of `csMgr    *connectivityStateManager`
     - until the `connectivity` is `Ready` the for loop breaked.
-- Let's continue the discussion of `newCCResolverWrapper()` 
+- Let's continue the discussion of `newCCResolverWrapper()`
 
 ```go
 // Dial creates a client connection to the given target.
@@ -183,22 +188,23 @@ func DialContext(ctx context.Context, target string, opts ...DialOption) (conn *
     return cc, nil
 }
 ```
-### ccResolverWrapper.UpdateState() 
+
+### ccResolverWrapper.UpdateState()
 
 - `newCCResolverWrapper()` calls `resolver.Build()` to build the resolver
-  - `ccResolverWrapper` is a wrapper on top of cc for resolvers. 
+  - `ccResolverWrapper` is a wrapper on top of cc for resolvers.
   - `ccResolverWrapper` implements `resolver.ClientConn` interface.
   - `resolver.ClientConn` contains the callbacks for resolver to notify any updates to the gRPC ClientConn.
 
 - For `resolver.Build()` `passthroughBuilder.Build()` will be called
   - `passthroughBuilder.Build()` creates `passthroughResolver` and calls its `r.start()` method
   - `r.start()` calls `r.cc.UpdateState()` method with the new `State` parameter
-  - the new `State` only contains `State.Addresses=[]resolver.Address{{Addr: "localhost:50051"}}` 
+  - the new `State` only contains `State.Addresses=[]resolver.Address{{Addr: "localhost:50051"}}`
 
 - For `r.cc.UpdateState()` `ccResolverWrapper.UpdateState()` will be called.
   - please note the difference between `ClientConn` struct and `resolver.ClientConn` interface
   - `ccResolverWrapper.UpdateState()` calls `ccr.cc.updateResolverState()`
-  - `ccResolverWrapper.UpdateState()` calls `ccr.poll()` to start a goroutine 
+  - `ccResolverWrapper.UpdateState()` calls `ccr.poll()` to start a goroutine
   - in the `ccr.poll()` goroutine
     - `ccr.resolveNow()` will be called to send a signal to resolver.
     - `ccr.resolveNow()` calls `ccr.resolver.ResolveNow()` which actually calls `passthroughResolver.ResolveNow()` While `passthroughResolver.ResolveNow()` do nothing at all.
@@ -342,6 +348,7 @@ func (ccr *ccResolverWrapper) UpdateState(s resolver.State) {
 }
 
 ```
+
 ### ClientConn.updateResolverState()
 
 - `ccr.cc.updateResolverState()` belongs to `ClientConn` which is the core of gRPC.
@@ -350,13 +357,13 @@ func (ccr *ccResolverWrapper) UpdateState(s resolver.State) {
   - in this case, `cc.sc` is nil, `cc.dopts.defaultServiceConfig` is false.
   - `cc.applyServiceConfigAndBalancer()` is called with the `emptyServiceConfig`, `defaultConfigSelector{emptyServiceConfig}` and `addrs` as parameters.
   - In `cc.applyServiceConfigAndBalancer()` the main outcome is assign value to `cc.balancerWrapper`
-    - In this case, `cc.dopts.balancerBuilder` is nil. 
+    - In this case, `cc.dopts.balancerBuilder` is nil.
     - The value of `newBalancerName` is `PickFirstBalancerName` Which is `pick_first`
     - `cc.switchBalancer()` is called.
       - In `cc.switchBalancer()`
       - After `balancer.Get()` is called, the value of `builder` is `pickfirstBuilder`
       - At last `newCCBalancerWrapper()` is called.
-- Finally `bw.updateClientConnState()` is called, which actually calls `ccBalancerWrapper.updateClientConnState()` 
+- Finally `bw.updateClientConnState()` is called, which actually calls `ccBalancerWrapper.updateClientConnState()`
 - Let's discuss `newCCBalancerWrapper()` first. We will discuss `ccBalancerWrapper.updateClientConnState()` later.
 
 ```go
@@ -549,19 +556,21 @@ func (cc *ClientConn) switchBalancer(name string) {
 }
 
 ```
+
 ### newCCBalancerWrapper()
+
 - When `newCCBalancerWrapper()` is called, `builder` is `pickfirstBuilder`
 - `b.Build()` is called, actually `pickfirstBuilder.Build()` will be called.
   - Create and return a new `pickfirstBalancer` object.
 - Start a new goroutine `ccb.watcher()`  
   - `ccb.watcher()` waits and reads the connection state `t` from a channel `ccb.scBuffer.Get()`
   - `t` is an object of type `scStateUpdate`
-  - `scStateUpdate` contains the `balancer.subConns` and the `connectivity.State` 
+  - `scStateUpdate` contains the `balancer.subConns` and the `connectivity.State`
   - Call `ccb.balancer.UpdateSubConnState()` to update the balancer connection state.
   - For `ccb.balancer.UpdateSubConnState()` `pickfirstBalancer.UpdateSubConnState()` will be called.
   - In `pickfirstBalancer.UpdateSubConnState()` `b.cc.UpdateState()` will be called.
     - In `ccBalancerWrapper.UpdateState()`
-    - `ccb.cc.csMgr.updateState()` will be called to notify the new state to `connectivityStateManager` 
+    - `ccb.cc.csMgr.updateState()` will be called to notify the new state to `connectivityStateManager`
     - `ccb.cc.blockingpicker.updatePicker()` will be called to update the `Picker`
 - Next, Let's discuss `ccBalancerWrapper.updateClientConnState()`
 
@@ -690,17 +699,19 @@ func (pw *pickerWrapper) updatePicker(p balancer.Picker) {
 }                                                                                
 
 ```
+
 ### ccBalancerWrapper.updateClientConnState()
+
 - In `ccBalancerWrapper.updateClientConnState()` `ccb.balancer.UpdateClientConnState()` will be called.
 - In this case, `Balancer` is `pickfirstBalancer` So `pickfirstBalancer.UpdateClientConnState()` will be called.
-- In `pickfirstBalancer.UpdateClientConnState()` `b.sc` is nil. 
+- In `pickfirstBalancer.UpdateClientConnState()` `b.sc` is nil.
   - `b.cc.NewSubConn()` is called, actually `ccBalancerWrapper.NewSubConn()` will be called.
     - `ccBalancerWrapper.NewSubConn()` calls `ccb.cc.newAddrConn()` to create `addrConn`
     - `acBalancerWrapper` is created. `acBalancerWrapper` implements `balancer.SubConn` interface
-    - `ccb.cc.newAddrConn()` creates `addrConn` and store it in connection pool `cc.conns[ac] = struct{}{}` 
-    - `addrConn` is the real connection, right now `addrConn` does not connect to the target. gRPC will perform the connection later. 
+    - `ccb.cc.newAddrConn()` creates `addrConn` and store it in connection pool `cc.conns[ac] = struct{}{}`
+    - `addrConn` is the real connection, right now `addrConn` does not connect to the target. gRPC will perform the connection later.
   - `b.cc.UpdateState()` is called, actually `ccBalancerWrapper.UpdateState()` will be called.
-    - We already discuss this method in previous section. 
+    - We already discuss this method in previous section.
     - Balancer use `ccBalancerWrapper.UpdateState()` to notify gRPC the state of connectivity and change the `Picker`
   - `b.sc.Connect()` is called, actually `acBalancerWrapper.Connect()` will be called.
     - In our case, `b.sc` is assigned by the return value of `b.cc.NewSubConn()` which is `acBalancerWrapper`
@@ -807,22 +818,26 @@ func (acbw *acBalancerWrapper) Connect() {
 }
 
 ```
+
 ## Dial process part II
+
 It's time to show the Dial process part II. Part II focus on establishing transport connection with the target server.
+
 - yellow box represents the important type and method/funciton.
 - green box represents a function run in a dedicated goroutine.
-- dash box represents the important type/struct. 
+- dash box represents the important type/struct.
 - arrow represents the call direction and order.
 
 ![Dial Part II](../images/images.007.png)
 
 ### addrConn.connect()
-- In `addrConn.connect()` 
+
+- In `addrConn.connect()`
   - `ac.updateConnectivityState()` will be called to update the connectivity state.
     - In our case, the connectivity state is `connectivity.Connecting`
     - In `ac.updateConnectivityState()` `ac.state` is updated and `ac.cc.handleSubConnStateChange()` will be called.
     - In `ac.cc.handleSubConnStateChange()` `cc.balancerWrapper.handleSubConnStateChange()` will be called.
-    - In `cc.balancerWrapper.handleSubConnStateChange()` 
+    - In `cc.balancerWrapper.handleSubConnStateChange()`
     - A message `scStateUpdate` will be created. Next calls `ccb.scBuffer.Put()` to send the state update message to `ccb.watcher()`
     - `ccb.scBuffer` is an object of type `buffer.Unbounded` `ccb.scBuffer.Put()` is actually `Unbounded.Put()`
     - `Unbounded.Put()` will send the message to a channel in `Unbounded` struct.
@@ -931,13 +946,15 @@ type scStateUpdate struct {
 }                                                                     
 
 ```
+
 ### addrConn.resetTransport()
-- In the last step of `addrConn.connect()`addrConn.resetTransport()` will be called to connect to the server asynchronously. 
+
+- In the last step of `addrConn.connect()`, `addrConn.resetTransport()` will be called to connect to the server asynchronously.
 - `ac.tryAllAddrs()` will be called with the spcified `connectDeadline` actually `addrConn.tryAllAddrs()` will be called.
   - In `addrConn.tryAllAddrs()` `ac.createTransport()` will be called, actually `addrConn.createTransport()` will be called.
   - In `addrConn.createTransport()` `transport.NewClientTransport()` will be called.
   - In `transport.NewClientTransport()` `newHTTP2Client()` will be called.
-  - In `newHTTP2Client()` 
+  - In `newHTTP2Client()`
     - `dial()` will be called to establish the transport connection.
     - If `transportCreds` is set, `transportCreds.ClientHandshake()` will be called to perform the TLS handshake.
     - `framer` is created via `newFramer()` calling.
@@ -946,7 +963,7 @@ type scStateUpdate struct {
     - Then start a new goroutine `t.reader()` which in charge of reading data from network connection.
     - Finally start a new goroutine `t.loopy.run()` which will reads control frames from controlBuf and processes them by
       - Updating loopy's internal state, or/and
-      - Writing out HTTP2 frames on the wire. 
+      - Writing out HTTP2 frames on the wire.
     - There is a dedicated chapter to introduce [controlBuffer, loopyWriter and framer](control.md), which provide more detail about their design.
 - If `ac.tryAllAddrs()` returned successfully, `ac.startHealthCheck()` will be called to starts the health checking stream (RPC) to watch the health stats of this connection if health checking is requested and configured.
   - In our case, health check is disabled. we will not discuss it in detail.
@@ -1108,7 +1125,7 @@ func (ccr *ccResolverWrapper) resolveNow(o resolver.ResolveNowOptions) {
 // createTransport creates a connection to addr. It returns the transport and a
 // Event in the successful case. The Event fires when the returned transport
 // disconnects.
-func (ac *addrConn) createTransport(addr resolver.Address, copts transport.ConnectOptions, connectDeadline time.Time) (transport.ClientTransport, *grpcsync.E       vent, error) {
+func (ac *addrConn) createTransport(addr resolver.Address, copts transport.ConnectOptions, connectDeadline time.Time) (transport.ClientTransport, *grpcsync.Event, error) {
     prefaceReceived := make(chan struct{})
     onCloseCalled := make(chan struct{})
     reconnect := grpcsync.NewEvent()
@@ -1172,7 +1189,7 @@ func (ac *addrConn) createTransport(addr resolver.Address, copts transport.Conne
     case <-time.After(time.Until(connectDeadline)):
         // We didn't get the preface in time.
         newTr.Close()
-        channelz.Warningf(logger, ac.channelzID, "grpc: addrConn.createTransport failed to connect to %v: didn't receive server preface in time. Reconnecting       ...", addr)
+        channelz.Warningf(logger, ac.channelzID, "grpc: addrConn.createTransport failed to connect to %v: didn't receive server preface in time. Reconnecting...", addr)
         return nil, nil, errors.New("timed out waiting for server handshake")
     case <-prefaceReceived:
         // We got the preface - huzzah! things are good.
@@ -1186,14 +1203,14 @@ func (ac *addrConn) createTransport(addr resolver.Address, copts transport.Conne
 
 // NewClientTransport establishes the transport with the required ConnectOptions
 // and returns it to the caller.           
-func NewClientTransport(connectCtx, ctx context.Context, addr resolver.Address, opts ConnectOptions, onPrefaceReceipt func(), onGoAway func(GoAwayReason), onC      lose func()) (ClientTransport, error) {
+func NewClientTransport(connectCtx, ctx context.Context, addr resolver.Address, opts ConnectOptions, onPrefaceReceipt func(), onGoAway func(GoAwayReason), onClose func()) (ClientTransport, error) {
     return newHTTP2Client(connectCtx, ctx, addr, opts, onPrefaceReceipt, onGoAway, onClose)
 }
              
 // newHTTP2Client constructs a connected ClientTransport to addr based on HTTP2
 // and starts to receive messages on it. Non-nil error returns if construction
 // fails.
-func newHTTP2Client(connectCtx, ctx context.Context, addr resolver.Address, opts ConnectOptions, onPrefaceReceipt func(), onGoAway func(GoAwayReason), onClos       e func()) (_ *http2Client, err error) {
+func newHTTP2Client(connectCtx, ctx context.Context, addr resolver.Address, opts ConnectOptions, onPrefaceReceipt func(), onGoAway func(GoAwayReason), onClose func()) (_ *http2Client, err error) {
     scheme := "http"
     ctx, cancel := context.WithCancel(ctx)
     defer func() {

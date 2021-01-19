@@ -1,4 +1,5 @@
 # Request parameters
+
 * [The problem](#the-problem)
 * [The clue](#the-clue)
 * [Lock the method](#lock-the-method)
@@ -8,11 +9,15 @@
 At [Serve stream](response.md#serve-stream), there is a problem we didn't discuss in detail. In one word, how does the server read the request parameter?
 
 ## The problem
+
 According to the [gRPC over HTTP2](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md). The request is composed by the following parts.
-```
+
+```txt
 Request → Request-Headers *Length-Prefixed-Message EOS. 
 ```
-Let's describe the problem in detail. In [Serve stream](response.md#serve-stream), 
+
+Let's describe the problem in detail. In [Serve stream](response.md#serve-stream),
+
 * `st.HandleStreams()` are called to handle the stream and run in its goroutine.
 * Meanwhile, `s.handleStream()` is called to handle the gRPC method call and run in its goroutine.
 * `st.HandleStreams()` will read the frame from the wire continuously
@@ -184,14 +189,17 @@ func (s *Server) handleStream(t transport.ServerTransport, stream *transport.Str
 +-- 20 lines: var errDesc string····································································································································
 }                                             
 ```
+
 ## The clue
 
-In `s.handleStream()` 
+In `s.handleStream()`
+
 * before the invocation of `recvAndDecompress()` there is no sign of reading the request parameter.
-* after `recvAndDecompress()` the gRPC is ready to call `md.Handler()`. 
+* after `recvAndDecompress()` the gRPC is ready to call `md.Handler()`.
 
 So the `recvAndDecompress()` must did something.
-* what's more, in `md.Handler()`, `df` is called to decode the read data to request object in `md.Handler()` 
+
+* what's more, in `md.Handler()`, `df` is called to decode the read data to request object in `md.Handler()`
 * `md.Handler()` is the service handler. It needs the request object to finish its work.
 
 In `recvAndDecompress()`, `p.recvMsg()` is called to read the request data, then `recvAndDecompress()` checks the payload and decompresses the received data. Let's check the `p.recvMsg()` next.
@@ -312,9 +320,12 @@ func recvAndDecompress(p *parser, s *transport.Stream, dc Decompressor, maxRecei
     return d, nil
 }
 ```
+
 ## Lock the method
+
 In `recvMsg()`, It looks like `p.r.Read()` read the data frame. From  [gRPC over HTTP2](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md) we know the following:
-```
+
+```txt
 The repeated sequence of Length-Prefixed-Message items is delivered in DATA frames
 
 * Length-Prefixed-Message → Compressed-Flag Message-Length Message
@@ -324,7 +335,8 @@ The repeated sequence of Length-Prefixed-Message items is delivered in DATA fram
 ```
 
 After carefully check the source code of `recvMsg()`, we can sure that:
-* `pf` is the *Compressed-Flag*. 
+
+* `pf` is the *Compressed-Flag*.
 * `length` is the *Message-Length*.
 * `msg` is the *Message*
 
@@ -388,17 +400,19 @@ func (p *parser) recvMsg(maxReceiveMessageSize int) (pf payloadFormat, msg []byt
     return pf, msg, nil
 }
 ```
+
 The value of `p` is assigned by the following statement:
 
 ```go
 d, err := recvAndDecompress(&parser{r: stream}, stream, dc, s.opts.maxReceiveMessageSize, payInfo, decomp)
 ```
 
-The type of `r` is `Stream`, When `p.r.Read()` is called, the following call stack will happens: 
+The type of `r` is `Stream`, When `p.r.Read()` is called, the following call stack will happens:
+
 * `p.r.Read()` is defined by `Stream.Read()`,
 * `Stream.Read()` calls `s.requestRead()`, which calls `t.adjustWindow()`, no data read, ignore it.
 * `Stream.Read()` calls `io.ReadFull(s.trReader, p)`, which calls `s.trReader.Read()`
-* `s.trReader.Read()` calls ` t.reader.Read(p)`, 
+* `s.trReader.Read()` calls `t.reader.Read(p)`,
 * `t.reader` is assigned by `recvBufferReader` struct,
 * `t.reader.Read(p)` is defined by `recvBufferReader.Read()`,
 * `recvBufferReader.Read()` calls `recvBufferReader.read()`,
@@ -407,6 +421,7 @@ The type of `r` is `Stream`, When `p.r.Read()` is called, the following call sta
 Let's check the `r.recv.get()`.
 
 For convenience, All related code is shown in one place.
+
 ```go
 // Read reads all p bytes from the wire for this stream.                                                                                 
 func (s *Stream) Read(p []byte) (n int, err error) {                                                                                     
@@ -542,13 +557,15 @@ func (r *recvBufferReader) readAdditional(m recvMsg, p []byte) (n int, err error
     return copied, nil
 }
 ```
-## Message reader
-* `r.recv` is of type `*recvBuffer`. Its `get()` method just return the `<-chan recvMsg`. 
-* `r.recv` is assigned by `s.buf` from the above code. 
-* `s.buf` is assigned by `buf`, which is the return value of `newRecvBuffer()`
-* `newRecvBuffer()` simply creates and returns a `*recvBuffer`, the `recvBuffer.c` field is a buffered channel:`chan recvMsg` 
 
-From [The clue](#the-clue) to here, we have the conclusion: `s.handleStream()` try to read the request data from the channel `recvBuffer.c`. Which is the same buffered channel `Stream.buf.c` 
+## Message reader
+
+* `r.recv` is of type `*recvBuffer`. Its `get()` method just return the `<-chan recvMsg`.
+* `r.recv` is assigned by `s.buf` from the above code.
+* `s.buf` is assigned by `buf`, which is the return value of `newRecvBuffer()`
+* `newRecvBuffer()` simply creates and returns a `*recvBuffer`, the `recvBuffer.c` field is a buffered channel:`chan recvMsg`
+
+From [The clue](#the-clue) to here, we have the conclusion: `s.handleStream()` try to read the request data from the channel `recvBuffer.c`. Which is the same buffered channel `Stream.buf.c`
 
 Then the next question is: who send the request data to that channel?
 
@@ -609,15 +626,18 @@ func (t *http2Server) operateHeaders(frame *http2.MetaHeadersFrame, handle func(
     ...
 }
 ```
+
 ## Message sender
 
 Let's back to the start point. In `HandleStreams()`, `t.framer.fr.ReadFrame()` has been checked. There is no sign of sending message to a channel. The next suspicious method is `t.handleData(frame)`. Which is used to handle `*http2.DataFrame`. see the [The problem](#the-problem) for code snippet.
 
 `handleData()` perform the following work:
+
 * connection flow control
 * forward the data frame to the selected `Stream`
 
 The forwarding work includes:
+
 * select the right stream to dispatch: `s, ok := t.getStream(f)`
 * copy the payload to `buffer`,
 * build a `recvMsg` with the payload `buffer`,
@@ -625,7 +645,7 @@ The forwarding work includes:
 * `s.buf.put()` is defined by `*recvBuffer.put()`,
 * in `*recvBuffer.put()`, the payload `recvMsg` will be sent to the `recvBuffer.c`.
 
-In conclusion: `st.HandleStreams()` will send the request data to the channel `recvBuffer.c`. Which is the same buffered channel `Stream.buf.c` 
+In conclusion: `st.HandleStreams()` will send the request data to the channel `recvBuffer.c`. Which is the same buffered channel `Stream.buf.c`
 
 For convenience, All related code is shown in one place.
 

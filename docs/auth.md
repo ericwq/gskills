@@ -1,29 +1,30 @@
 # Authentication
-* [Client side](#client-side)
-* [Server side](#server-side)
-* [DialOption and ServerOption](#dialoption-and-serveroption)
-* [Server internal](#server-internal)
-* [Client internal](#client-internal)
-* [Server internal 2](#server-internal-2)
 
-Let's discuss the [authentication example](https://github.com/grpc/grpc-go/tree/master/examples) from `grpc-go/examples/features/authentication`. Through this discussion, we can learn how to perform the authentication tasks: TLS connection, oauth2 authentication. We can also learn authentication related internal components of gRPC. 
-<!--
--->
-## Client side 
+- [Client side](#client-side)
+- [Server side](#server-side)
+- [DialOption and ServerOption](#dialoption-and-serveroption)
+- [Server internal](#server-internal)
+- [Client internal](#client-internal)
+- [Server internal 2](#server-internal-2)
+
+Let's discuss the [authentication example](https://github.com/grpc/grpc-go/tree/master/examples) from `grpc-go/examples/features/authentication`. Through this discussion, we can learn how to perform the authentication tasks: TLS connection, oauth2 authentication. We can also learn authentication related internal components of gRPC.
+
+## Client side
 
 In the following client code snippet, the application performs the one-way(server side) TLS connection and provides oauth token for gRPC call validation.
-- `perRPC` is a value of `credentials.PerRPCCredentials` interface. 
+
+- `perRPC` is a value of `credentials.PerRPCCredentials` interface.
   - `oauth.NewOauthAccess()` creates the `oauthAccess` struct with a given token
   - `oauthAccess` implements `credentials.PerRPCCredentials` interface
-  - You can get the token via OAuth2 or other way. Here the token is a fixed oauth2 token. 
+  - You can get the token via OAuth2 or other way. Here the token is a fixed oauth2 token.
   - Furthermore `perRPC` requires transport security. Because `oauthAccess.RequireTransportSecurity()` return true.
-- `credentials.NewClientTLSFromFile()` creates a credential object from the server certificate and server name, 
-  - `creds` is a vale of `TransportCredentials` interface. 
+- `credentials.NewClientTLSFromFile()` creates a credential object from the server certificate and server name,
+  - `creds` is a vale of `TransportCredentials` interface.
   - `credentials.NewClientTLSFromFile()` creates the `tlsCreds` struct, which implements `TransportCredentials`.
   - `creds` can be used to establish a secure connection.
-- prepare a `DialOption` with `grpc.WithPerRPCCredentials()`, which sets credentials and places auth state on each outbound RPC. 
+- prepare a `DialOption` with `grpc.WithPerRPCCredentials()`, which sets credentials and places auth state on each outbound RPC.
   - `grpc.WithPerRPCCredentials()` just sets the value of `o.copts.PerRPCCredentials`
-- prepare a `DialOption` with `grpc.WithTransportCredentials()`, which configures a connection level security credentials 
+- prepare a `DialOption` with `grpc.WithTransportCredentials()`, which configures a connection level security credentials
   - `grpc.WithTransportCredentials()` just sets the value of `o.copts.TransportCredentials`
 - `o.copts` is actually `dialOptions.copts`, which is a value of `transport.ConnectOptions` struct
   - Which covers all relevant options for communicating with the server.
@@ -200,14 +201,14 @@ The server side must perform the counterpart work to enable the client side auth
   - `cert` is a `Certificate`
 - prepare a `ServerOption` with `grpc.UnaryInterceptor()`, which installs the `ensureValidToken` interceptor to gRPC.
   - `grpc.UnaryInterceptor()` just sets the value of `o.unaryInt`
-- prepare a `ServerOption` with `grpc.Creds()`, which sets credentials for server connections. 
-  - `credentials.NewServerTLSFromCert()`  constructs TLS credentials from the `Certificate` parameter. 
+- prepare a `ServerOption` with `grpc.Creds()`, which sets credentials for server connections.
+  - `credentials.NewServerTLSFromCert()`  constructs TLS credentials from the `Certificate` parameter.
   - `grpc.Creds()` just sets the value of `o.creds`
 - `o` is `serverOptions`, which cover all the options for the server.
 - `ensureValidToken()` is an interceptor, which ensures a valid token exists within a request's metadata.
   - First it calls `metadata.FromIncomingContext()` to get the metadata from the context.
   - Then it verifies the expected token exist in the metadata. Otherwise the interceptor will stop the execution of handler and return error.
-  - There is a dedicated chapter to discuss [Interceptor](interceptor.md) 
+  - There is a dedicated chapter to discuss [Interceptor](interceptor.md)
 
 If we finish the above setup and run the application (both client side and server side), the expected TLS connection and oauth authentication will wok.
 
@@ -315,18 +316,20 @@ func NewTLS(c *tls.Config) TransportCredentials {
     return tc                                                                             
 }                                                                                         
 ```
+
 ## DialOption and ServerOption
 
 gRPC client and gRPC server both need options to extend the capability. Let's discuss the design of `DialOption` and `ServerOption`. It's more likely you can also use this design in you application code.
 
 `DialOption` and `ServerOption` has the same design. Lets' discuss the `ServerOption` to understand the design.
 
-`ServerOption` is an interface. It has an `apply(*serverOptions) ` method.
-* one implementation is `EmptyServerOption`. It's a empty struct with an empty `apply()` method
-* one implementation is `funcServerOption`. It's a struct with a `f func(*serverOptions)` field.
-  * `funcServerOption` has a `apply(do *serverOptions)` method, the only action of this method is to call the `fdo.f()` 
-  * `newFuncServerOption` is a function. It accepts the `f func(*serverOptions)` parameter and return a `funcServerOption` value.
-* Both `grpc.UnaryInterceptor()` and `grpc.Creds()` call `newFuncServerOption` to build a `funcServerOption`.
+`ServerOption` is an interface. It has an `apply(*serverOptions)` method.
+
+- one implementation is `EmptyServerOption`. It's a empty struct with an empty `apply()` method
+- one implementation is `funcServerOption`. It's a struct with a `f func(*serverOptions)` field.
+  - `funcServerOption` has a `apply(do *serverOptions)` method, the only action of this method is to call the `fdo.f()`
+  - `newFuncServerOption` is a function. It accepts the `f func(*serverOptions)` parameter and return a `funcServerOption` value.
+- Both `grpc.UnaryInterceptor()` and `grpc.Creds()` call `newFuncServerOption` to build a `funcServerOption`.
 
 From the application point of view, `grpc.UnaryInterceptor()` and `grpc.Creds()` just returns `ServerOption` value. While these value is a struct  with a `f func(*serverOptions)` field and has a `apply(do *serverOptions)` method, gRPC still needs to take some actions to use these  `ServerOption` value.
 
@@ -391,6 +394,7 @@ type serverOptions struct {
 }
 
 ```
+
 We will not discuss the design of `DialOption` in detail.
 
 ```go
@@ -464,13 +468,15 @@ type dialOptions struct {
 }
 
 ```
+
 Let's continue discuss the use of `ServerOption` object. When you call  `grpc.NewServer()`, `ServerOption` objects will be used to initialize the gRPC server.
 
 In `grpc.NewServer()`
-* All the `opt ...ServerOption` parameters will be processed by a for loop.
-* Before the for loop, `defaultServerOptions` will be assigned to `opts`.
-* In the for loop, every `ServerOption.apply()` will be called and the `opts` will be the parameter of `ServerOption.apply()`.
-* After the for loop, `opts` will be assigned to `Server.opts`. All the options is stored in the gRPC server.
+
+- All the `opt ...ServerOption` parameters will be processed by a for loop.
+- Before the for loop, `defaultServerOptions` will be assigned to `opts`.
+- In the for loop, every `ServerOption.apply()` will be called and the `opts` will be the parameter of `ServerOption.apply()`.
+- After the for loop, `opts` will be assigned to `Server.opts`. All the options is stored in the gRPC server.
 
 In this way, all the fields of `serverOptions` can be processed in a clean and intuitive way. Actually, If more options were added to the `serverOptions`, you only need to add the corresponding function similar like `grpc.UnaryInterceptor()`.
 
@@ -510,14 +516,16 @@ func NewServer(opt ...ServerOption) *Server {
 }
 
 ```
+
 ## Server internal
+
 At the [Server side](#server-side), `grpc.Creds()` sets the value of `o.creds`. Let's discuss how the server use `o.creds` to active the server side TLS connection. We will not discuss the `o.unaryInt` option which is set by `grpc.UnaryInterceptor()`. There is a dedicated chapter to discuss [Interceptor](interceptor.md)
 
 From the [Serve Request](response.md#serve-request), in the `s.handleRawConn()` method. `s.useTransportAuthenticator()` will be called before `s.newHTTP2Transport()` and `s.serveStreams()`. The secret is in `s.useTransportAuthenticator()`. Let's examine it in detail.
 
 ![images.004.png](../images/images.004.png)
 
-```go 
+```go
 // handleRawConn forks a goroutine to handle a just-accepted connection that
 // has not had any I/O performed on it yet.
 func (s *Server) handleRawConn(rawConn net.Conn) {
@@ -557,12 +565,14 @@ func (s *Server) handleRawConn(rawConn net.Conn) {
     }()
 }
 ```
+
 In `useTransportAuthenticator()`, if `s.opts.creds` is not nil, `creds.ServerHandshake()` method will be called.
-* When we prepare the `s.opts.creds` value, we call `credentials.NewServerTLSFromCert()` to get the `TransportCredentials ` object.
-* `NewServerTLSFromCert()` calls `NewTLS()` to finish the job and provides the certificate as parameter.
-* `NewTLS()` creates a `tlsCreds` object and returns `tlsCreds`.
-* `tlsCreds` is a struct, its `ServerHandshake()` method will perform the TLS handshake to establish the secure connection.
-* We will not dive into the `ServerHandshake()`, it's enough to know the that  `useTransportAuthenticator()` will use the `s.opts.creds` to finish its job.
+
+- When we prepare the `s.opts.creds` value, we call `credentials.NewServerTLSFromCert()` to get the `TransportCredentials` object.
+- `NewServerTLSFromCert()` calls `NewTLS()` to finish the job and provides the certificate as parameter.
+- `NewTLS()` creates a `tlsCreds` object and returns `tlsCreds`.
+- `tlsCreds` is a struct, its `ServerHandshake()` method will perform the TLS handshake to establish the secure connection.
+- We will not dive into the `ServerHandshake()`, it's enough to know the that  `useTransportAuthenticator()` will use the `s.opts.creds` to finish its job.
 
 After the call of `useTransportAuthenticator()`, the server gets the secure connection.
 
@@ -612,7 +622,9 @@ func (c *tlsCreds) ServerHandshake(rawConn net.Conn) (net.Conn, AuthInfo, error)
 }
 
 ```
+
 ## Client internal
+
 In the [Client side](#client-side), `grpc.WithPerRPCCredentials()` sets the value of `o.copts.PerRPCCredentials`.  `grpc.WithTransportCredentials()` sets the value of `o.copts.TransportCredentials`. Let's discuss how the client use `o.copts.PerRPCCredentials` and `o.copts.TransportCredentials`.
 
 In the [Client Dial](dial.md), `newHTTP2Client()` will be called to establish the secure transport connection. Before `newHTTP2Client()` is called, the `opts ConnectOptions` parameter need to be set correctly.
@@ -626,11 +638,11 @@ In the [Client Dial](dial.md), `newHTTP2Client()` will be called to establish th
 - In `addrConn.createTransport()`, `transport.NewClientTransport()` gets the `copts` parameter from input arguments.
 - In `NewClientTransport`, `newHTTP2Client()` gets the `opts` parameter from input arguments.
 - In `newHTTP2Client()`, After the `dial()` finished, the normal TCP connection has been established.
-  - `newHTTP2Client()` extracts the `transportCreds` and `perRPCCreds` from `opts` 
+  - `newHTTP2Client()` extracts the `transportCreds` and `perRPCCreds` from `opts`
   - If `transportCreds` is not nil, call `transportCreds.ClientHandshake()` to perform the TLS handshake.
   - In our case, `transportCreds` is created by previous `credentials.NewClientTLSFromFile()` invocation. So `transportCreds` is a value of type `tlsCreds`.
 
-That's the way gRPC using `o.copts.TransportCredentials` option, eventually `o.copts.TransportCredentials` option is used to perform the tls client hand shake. 
+That's the way gRPC using `o.copts.TransportCredentials` option, eventually `o.copts.TransportCredentials` option is used to perform the tls client hand shake.
 
 Let's continue the discussion of `o.copts.PerRPCCredentials` next.
 
@@ -638,7 +650,7 @@ Let's continue the discussion of `o.copts.PerRPCCredentials` next.
 // newHTTP2Client constructs a connected ClientTransport to addr based on HTTP2
 // and starts to receive messages on it. Non-nil error returns if construction
 // fails.
-func newHTTP2Client(connectCtx, ctx context.Context, addr resolver.Address, opts ConnectOptions, onPrefaceReceipt func(       ), onGoAway func(GoAwayReason), onClose func()) (_ *http2Client, err error) {
+func newHTTP2Client(connectCtx, ctx context.Context, addr resolver.Address, opts ConnectOptions, onPrefaceReceipt func(), onGoAway func(GoAwayReason), onClose func()) (_ *http2Client, err error) {
     scheme := "http"
     ctx, cancel := context.WithCancel(ctx)
 +--  5 lines: defer func() {···························································································
@@ -667,7 +679,7 @@ func newHTTP2Client(connectCtx, ctx context.Context, addr resolver.Address, opts
         // Attributes field of resolver.Address, which is shoved into connectCtx
         // and passed to the credential handshaker. This makes it possible for
         // address specific arbitrary data to reach the credential handshaker.
-        contextWithHandshakeInfo := internal.NewClientHandshakeInfoContext.(func(context.Context, credentials.ClientHan       dshakeInfo) context.Context)
+        contextWithHandshakeInfo := internal.NewClientHandshakeInfoContext.(func(context.Context, credentials.ClientHandshakeInfo) context.Context)
         connectCtx = contextWithHandshakeInfo(connectCtx, credentials.ClientHandshakeInfo{Attributes: addr.Attributes})
         conn, authInfo, err = transportCreds.ClientHandshake(connectCtx, addr.ServerName, conn)
         if err != nil {
@@ -680,7 +692,7 @@ func newHTTP2Client(connectCtx, ctx context.Context, addr resolver.Address, opts
                 }); ok {
                     secLevel := ci.GetCommonAuthInfo().SecurityLevel
                     if secLevel != credentials.InvalidSecurityLevel && secLevel < credentials.PrivacyAndIntegrity {
-                        return nil, connectionErrorf(true, nil, "transport: cannot send secure credentials on an insecu       re connection")
+                        return nil, connectionErrorf(true, nil, "transport: cannot send secure credentials on an insecure connection")
                     }
                 }
             }
@@ -729,7 +741,7 @@ func (cc *ClientConn) newAddrConn(addrs []resolver.Address, opts balancer.NewSub
 // tryAllAddrs tries to creates a connection to the addresses, and stop when at the
 // first successful one. It returns the transport, the address and a Event in
 // the successful case. The Event fires when the returned transport disconnects.
-func (ac *addrConn) tryAllAddrs(addrs []resolver.Address, connectDeadline time.Time) (transport.ClientTransport, resolv       er.Address, *grpcsync.Event, error) {
+func (ac *addrConn) tryAllAddrs(addrs []resolver.Address, connectDeadline time.Time) (transport.ClientTransport, resolver.Address, *grpcsync.Event, error) {
     var firstConnErr error                                                        
     for _, addr := range addrs {
         ac.mu.Lock()
@@ -767,7 +779,7 @@ func (ac *addrConn) tryAllAddrs(addrs []resolver.Address, connectDeadline time.T
 // createTransport creates a connection to addr. It returns the transport and a
 // Event in the successful case. The Event fires when the returned transport
 // disconnects.
-func (ac *addrConn) createTransport(addr resolver.Address, copts transport.ConnectOptions, connectDeadline time.Time) (       transport.ClientTransport, *grpcsync.Event, error) {
+func (ac *addrConn) createTransport(addr resolver.Address, copts transport.ConnectOptions, connectDeadline time.Time) (transport.ClientTransport, *grpcsync.Event, error) {
     prefaceReceived := make(chan struct{})
     onCloseCalled := make(chan struct{})
     reconnect := grpcsync.NewEvent()
@@ -776,7 +788,7 @@ func (ac *addrConn) createTransport(addr resolver.Address, copts transport.Conne
     newTr, err := transport.NewClientTransport(connectCtx, ac.cc.ctx, addr, copts, onPrefaceReceipt, onGoAway, onClose)
     if err != nil {                            
         // newTr is either nil, or closed.                                         
-        channelz.Warningf(logger, ac.channelzID, "grpc: addrConn.createTransport failed to connect to %v. Err: %v. Reco       nnecting...", addr, err)
+        channelz.Warningf(logger, ac.channelzID, "grpc: addrConn.createTransport failed to connect to %v. Err: %v. Reconnecting...", addr, err)
         return nil, nil, err                                                   
     }                                                                   
              
@@ -784,7 +796,7 @@ func (ac *addrConn) createTransport(addr resolver.Address, copts transport.Conne
     case <-time.After(time.Until(connectDeadline)):
         // We didn't get the preface in time.
         newTr.Close()
-        channelz.Warningf(logger, ac.channelzID, "grpc: addrConn.createTransport failed to connect to %v: didn't receiv       e server preface in time. Reconnecting...", addr)
+        channelz.Warningf(logger, ac.channelzID, "grpc: addrConn.createTransport failed to connect to %v: didn't receive server preface in time. Reconnecting...", addr)
         return nil, nil, errors.New("timed out waiting for server handshake")
     case <-prefaceReceived:
         // We got the preface - huzzah! things are good.
@@ -798,7 +810,7 @@ func (ac *addrConn) createTransport(addr resolver.Address, copts transport.Conne
 
 // NewClientTransport establishes the transport with the required ConnectOptions
 // and returns it to the caller.                                                
-func NewClientTransport(connectCtx, ctx context.Context, addr resolver.Address, opts ConnectOptions, onPrefaceReceipt fu      nc(), onGoAway func(GoAwayReason), onClose func()) (ClientTransport, error) {
+func NewClientTransport(connectCtx, ctx context.Context, addr resolver.Address, opts ConnectOptions, onPrefaceReceipt fuc(), onGoAway func(GoAwayReason), onClose func()) (ClientTransport, error) {
     return newHTTP2Client(connectCtx, ctx, addr, opts, onPrefaceReceipt, onGoAway, onClose)
 }                                                                             
 
@@ -836,6 +848,7 @@ type tlsCreds struct {
 }                                                                                                                    
                                                                                                                      
 ```
+
 Let's discuss the `opts.PerRPCCredentials` option.
 
 - In the same `newHTTP2Client()`, `newHTTP2Client()` extracts the `transportCreds` and `perRPCCreds` from opts.
@@ -852,11 +865,11 @@ In the [Send Request-Headers](request.md#send-request-headers), in the `a.t.NewS
   - `t.getTrAuthData()` is called to get the `authData` map from `t.perRPCCreds`
   - In `t.getTrAuthData()`, `c.GetRequestMetadata()` is called, actually `oauthAccess.GetRequestMetadata()` will be called.
     - `oauthAccess.GetRequestMetadata()` returns `"authorization": oa.token.Type() + " " + oa.token.AccessToken`
-  - `t.getTrAuthData()` returns and `authData` got the value: ``map[authorization:Bearer some-secret-token]`
+  - `t.getTrAuthData()` returns and `authData` got the value: `map[authorization:Bearer some-secret-token]`
   - Then `http2Client.createHeaderFields()` uses the `authData` to build the `headerFields`.
 - After the call of `http2Client.createHeaderFields()`, the client is ready to send the request http headers.
 
-Now the `opts.PerRPCCredentials` option was sent as the HTTP reqeust header meta data by the gRPC client. 
+Now the `opts.PerRPCCredentials` option was sent as the HTTP reqeust header meta data by the gRPC client.
 
 Let's continue the discussion of how the gRPC server use these reqeust header meta data.
 
@@ -937,11 +950,13 @@ func (oa oauthAccess) GetRequestMetadata(ctx context.Context, uri ...string) (ma
 }                                                                                                
 
 ```
+
 ## Server internal 2
 
 In [Server side](#server-side), `ensureValidToken()` calls `metadata.FromIncomingContext()` to get the metadata from the context. Who put that metadata into the context?  There is only one function `metadata.NewIncomingContext()` which can set the `mdIncomingKey{}`.  Then the question is: who can call `metadata.NewIncomingContext()`?  
 
 From the [Serve Request](response.md#serve-request), in the `t.operateHeaders()` method.
+
 - `decodeState` is initialized and its `state.decodeHeader()` method is called.
   - `state.decodeHeader()` calls `d.processHeaderField()` to process the header fields.
   - In `decodeState.processHeaderField()` every valid field will call `d.addMetadata()`
@@ -949,7 +964,7 @@ From the [Serve Request](response.md#serve-request), in the `t.operateHeaders()`
   - `d.data.mdata` is `state.data.mdata` in `t.operateHeaders()`.
 - `metadata.NewIncomingContext()` is called to creates a new context with incoming `md` attached. The argument for `md` parameter is `state.data.mdata`
 
-In this way, the `opts.PerRPCCredentials` is read from HTTP request header meta data and attached to the stream `contex`. Now, `ensureValidToken()` can call `metadata.FromIncomingContext()` to get the metadata from the context. 
+In this way, the `opts.PerRPCCredentials` is read from HTTP request header meta data and attached to the stream `contex`. Now, `ensureValidToken()` can call `metadata.FromIncomingContext()` to get the metadata from the context.
 
 ```go
 // NewIncomingContext creates a new context with incoming md attached.                                                         

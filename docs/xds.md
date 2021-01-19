@@ -1,12 +1,15 @@
+
 # xDS protocol support
+
 - [Protocol buffers map for xDS v3 API](#protocol-buffers-map-for-xds-v3-api)
 - [xDS bootstrap file](#xds-bootstrap-file)
 
 The gRPC team believe that Envoy proxy (actually, any data plane) is not the only solution for service mesh. By support xDS protocol gRPC can take the role of Envoy proxy. In general gRPC wants to build a proxy-less service mesh without data plane.  See [xDS Support in gRPC - Mark D. Roth](https://www.youtube.com/watch?v=IbcJ8kNmsrE) and [Traffic Director and gRPC—proxyless services for your service mesh](https://cloud.google.com/blog/products/networking/traffic-director-supports-proxyless-grpc).
 
-From the view of data plane API, envoy proxy is a client. gRPC is another different client, while gRPC only supports partial capability of Envoy proxy. Although they are different client with different design goal, they may share the same management server (control plane) and the same data plane API. 
+From the view of data plane API, envoy proxy is a client. gRPC is another different client, while gRPC only supports partial capability of Envoy proxy. Although they are different client with different design goal, they may share the same management server (control plane) and the same data plane API.  
 
 The following is the design document for xDS protocol support. It's a good start point to understand the code. While it's not easy to understand these documents if you are not familiar with Envoy proxy. It took me several weeks to read the [Envoy document](https://www.envoyproxy.io/docs/envoy/latest/about_docs) and [xDS REST and gRPC protocol](https://www.envoyproxy.io/docs/envoy/latest/api-docs/xds_protocol) before the following documents.
+
 - [xDS-Based Global Load Balancing](https://github.com/grpc/proposal/blob/master/A27-xds-global-load-balancing.md)
 - [Load Balancing Policy Configuration](https://github.com/grpc/proposal/blob/master/A24-lb-policy-config.md)
 - [gRPC xDS traffic splitting and routing](https://github.com/grpc/proposal/blob/master/A28-xds-traffic-splitting-and-routing.md)
@@ -18,15 +21,17 @@ There are [four variants of the xDS Transport Protocol](https://www.envoyproxy.i
 
 "In the future, we may add support for the incremental ADS variant of xDS. However, we have no plans to support any non-aggregated variants of xDS, nor do we plan to support REST or filesystem subscription."
 
-[RouteConfiguration](https://github.com/envoyproxy/envoy/blob/9e83625b16851cdc7e4b0a4483b0ce07c33ba76b/api/envoy/api/v2/route.proto#L24) in Envoy is different thing from [ServiceConfig](https://github.com/grpc/grpc-proto/blob/master/grpc/service_config/service_config.proto) in gRPC. While gRPC intends to populate `ServiceConfig` with the data from `RouteConfiguration`. 
+[RouteConfiguration](https://github.com/envoyproxy/envoy/blob/9e83625b16851cdc7e4b0a4483b0ce07c33ba76b/api/envoy/api/v2/route.proto#L24) in Envoy is different thing from [ServiceConfig](https://github.com/grpc/grpc-proto/blob/master/grpc/service_config/service_config.proto) in gRPC. While gRPC intends to populate `ServiceConfig` with the data from `RouteConfiguration`.  
 
 ## Protocol buffers map for xDS v3 API
 
-I found adding the following information can help me to understand the relationship between xDS data structure. It is easy to get lost.  Especially for a Envoy newbie. Note that `static_resources` is not used in xDS protocol instead it uses `dynamic_resources`. Yet xDS share the same proto (data structure) with static configuration. 
+I found adding the following information can help me to understand the relationship between xDS data structure. It is easy to get lost.  Especially for a Envoy newbie. Note that `static_resources` is not used in xDS protocol instead it uses `dynamic_resources`. Yet xDS share the same proto (data structure) with static configuration.  
+
 - LDS: [Listener](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/listener/v3/listener.proto#config-listener-v3-listener) -> [filter_chains](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/listener/v3/listener_components.proto#envoy-v3-api-msg-config-listener-v3-filterchain) -> [filters](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/listener/v3/listener_components.proto#envoy-v3-api-msg-config-listener-v3-filter) -> [HTTP connection manager](https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/filters/network/http_connection_manager/v3/http_connection_manager.proto#envoy-v3-api-msg-extensions-filters-network-http-connection-manager-v3-httpconnectionmanager) -> [route_config](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/route/v3/route.proto#envoy-v3-api-msg-config-route-v3-routeconfiguration) RouteConfiguration
 - RDS: [RouteConfiguration](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/route/v3/route.proto#envoy-v3-api-msg-config-route-v3-routeconfiguration) -> [virtual_hosts](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/route/v3/route_components.proto#envoy-v3-api-msg-config-route-v3-virtualhost) -> [routes](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/route/v3/route_components.proto#envoy-v3-api-msg-config-route-v3-route) -> [route](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/route/v3/route_components.proto#envoy-v3-api-msg-config-route-v3-routeaction) -> cluster: name
 
-Example YAML: 
+Example YAML:  
+
 ```yaml
 static_resources:
 
@@ -65,7 +70,8 @@ static_resources:
 - CDS: [Cluster](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/cluster/v3/cluster.proto#config-cluster-v3-cluster) -> [load_assignment](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/endpoint/v3/endpoint.proto#envoy-v3-api-msg-config-endpoint-v3-clusterloadassignment) ClusterLoadAssignment
 - EDS: [ClusterLoadAssignment](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/endpoint/v3/endpoint.proto#envoy-v3-api-msg-config-endpoint-v3-clusterloadassignment) -> [endpoints](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/endpoint/v3/endpoint_components.proto#envoy-v3-api-msg-config-endpoint-v3-localitylbendpoints) -> [lb_endpoints](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/endpoint/v3/endpoint_components.proto#envoy-v3-api-msg-config-endpoint-v3-lbendpoint) -> [endpoint](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/endpoint/v3/endpoint_components.proto#envoy-v3-api-msg-config-endpoint-v3-endpoint) -> [address](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/core/v3/address.proto#envoy-v3-api-msg-config-core-v3-address) -> [socket_address](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/core/v3/address.proto#envoy-v3-api-msg-config-core-v3-socketaddress)
 
-Example YAML: 
+Example YAML:  
+
 ```yaml
                   cluster: service_envoyproxy_io
 
@@ -92,9 +98,11 @@ Example YAML:
 ```
 
 ## xDS bootstrap file
-gRPC uses `XdsClient` to interact with xDS management server. `XdsClient` need a bootstrap file which is a JSON file. The bootstrap file is determined via the `GRPC_XDS_BOOTSTRAP` environment variable. 
+
+gRPC uses `XdsClient` to interact with xDS management server. `XdsClient` need a bootstrap file which is a JSON file. The bootstrap file is determined via the `GRPC_XDS_BOOTSTRAP` environment variable.  
 
 The following is the definition of bootstrap JSON file.
+
 ```go
 type bootstrapConfig struct {                                
     XdsServers               []server                   `json:"xds_servers,omitempty"`                                
@@ -119,7 +127,9 @@ type node struct {
 }                                                                                    
 
 ```
+
 The example of the gRPC xDS bootstrap file.
+
 ```json
 {
    "xds_server": {
@@ -148,7 +158,9 @@ The example of the gRPC xDS bootstrap file.
 
 
 ```
+
 Comparing it with the Envoy bootstrap file for ADS.  
+
 ```yaml
 node:
   cluster: test-cluster
