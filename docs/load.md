@@ -695,17 +695,20 @@ Service config is defined in [service_config.go](https://github.com/grpc/grpc-go
 - `healthCheckConfig`: must be set as one of the requirement to enable LB channel health check.
 - `rawJSONString`: stores service config json string that get parsed into this service config struct.
 
-If you are familiar with envoy, all of the features can be supported by envoy. Service config might be replaced by xDS protocol in the future.
+If you are familiar with Envoy, all of the features can be supported by Envoy. Service config will be used by xDS protocol in the future.
 
 Now, we understand the purpose of service config. You have two ways to set service config:
-- set the service config in dns TXT record and extract that information by dns resolver. Which is stored in `resolver.State.ServiceConfig`
+- set the service config via resolver
+  - for dnsResolver: the service config is stored in dns TXT record and is extracted by dnsResolver. The pared service config is stored in `resolver.State.ServiceConfig`
 - set the service config through `defaultServiceConfigRawJSON` and extract it via `DialContext()`. Which is stored in `ClientConn.dopts.defaultServiceConfig`
 
-The following is the summary: Before the envoy emerges, gRPC team plans to build a rich set of load balancing mechanism, including `grpclb` balancer, `rls` balancer, `round_robin` balancer, `pick_first` balancer. The following statement is quoted from [A27: xDS-Based Global Load Balancing](https://github.com/grpc/proposal/blob/master/A27-xds-global-load-balancing.md)
+The following is the summary: Before the Envoy emerges, gRPC team plans to build a rich set of load balancing mechanism, including `grpclb` balancer, `rls` balancer, `round_robin` balancer, `pick_first` balancer. The following statement is quoted from [A27: xDS-Based Global Load Balancing](https://github.com/grpc/proposal/blob/master/A27-xds-global-load-balancing.md)
 
 "gRPC currently supports its own "grpclb" protocol for look-aside load-balancing.  However, the popular Envoy proxy uses the xDS API for many types of configuration, including load balancing, and that API is evolving into a standard that will be used to configure a variety of data plane software. In order to converge with this industry trend, gRPC will be moving from its original grpclb protocol to the new xDS protocol."
 
-Here is my prediction (2021-Jan-03): `defaultServiceConfigRawJSON` is a short-cuts to let the gRPC core to reuse the existing service config component. This short-cuts will be replaced by a new way in the future. The reason is simple: Using raw json string to set the service config is weird. It's error prone and mysterious. As xDS support becomes mature, we will see the change in 2021.
+Here is my point: `defaultServiceConfigRawJSON` is a short-cuts to let the gRPC core to reuse the existing service config component. This short-cuts will be reused by xDS protocol in the future. The name resolver returns the service config to the gRPC client. It's the key design of gRPC. And service config is the gRPC internal data structure.
+
+Although personaly, I thinke using raw json string to set the service config is weird. It's error prone and mysterious. 
 
 Next, let's continue to discuss how to use `defaultServiceConfig`.
 
