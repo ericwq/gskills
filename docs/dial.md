@@ -11,13 +11,13 @@
   - [addrConn.connect()](#addrconnconnect)
   - [addrConn.resetTransport()](#addrconnresettransport)
 
-Client dial is the process to establish the connection with the target server. However the machanism is very complex. Let's try to make it clear for reader.
+Client dial is the process to establish the connection with the target server. However the mechanism is very complex. Let's try to make it clear for reader.
 
-In this discussion, we will use the `passthrough` resolver and `pickfirst` balancer. They are the default resolver and balancer. For other resolver and balancer, The dial procees is similar with little difference.
+In this discussion, we will use the `passthrough` resolver and `pickfirst` balancer. They are the default resolver and balancer. For other resolver and balancer, The dial process is similar with little difference.
 
 ## Balancer and Resolver API
 
-There is an [official design document](https://github.com/grpc/proposal/blob/master/L9-go-resolver-balancer-API.md) about the resolver and balancer API. But it's a little bit older than the code. The following diagram is made from the recent souce code.
+There is an [official design document](https://github.com/grpc/proposal/blob/master/L9-go-resolver-balancer-API.md) about the resolver and balancer API. But it's a little bit older than the code. The following diagram is made from the recent source code.
 
 Resolver watches for the updates on the specified target. Updates include address updates and service config updates. There is also a `resolver.ClientConn` interface which contains the callbacks for resolver to notify any updates to the gRPC ClientConn. `resolver.Builder` intercase creates a resolver that will be used to watch name resolution updates. There is a resolver map stores all the registered resolver builders.
 
@@ -30,11 +30,11 @@ Balancer takes input from gRPC, manages SubConns, collects and aggregates the co
 
 ## Dial process part I
 
-`Dial` is a complex process. The following diagram is a map to prevent you from losting in a mass of code. I did lost many times. And this is only part I. Yes, there is part II.
+`Dial` is a complex process. The following diagram is a map to prevent you from lost in a mass of code. I did lost many times. And this is only part I. Yes, there is part II.
 
-- yellow box represents the important type and method/funciton.
+- yellow box represents the important type and method/function.
 - green box represents a function run in a dedicated goroutine.
-- dash box represents the important type/struct in our previouse API diagram.
+- dash box represents the important type/struct in our previous API diagram.
 - arrow represents the call direction and order.
 
 ![Dial part I](../images/images.006.png)
@@ -87,7 +87,7 @@ func main() {
   - or  wait the state changing for a blocking dial
   - for blocking dial mode,
     - in the for loop, `cc.GetState()` and `cc.WaitForStateChange()` working together to monitor the state of `csMgr    *connectivityStateManager`
-    - until the `connectivity` is `Ready` the for loop breaked.
+    - until the `connectivity` is `Ready` the for loop break.
 - Let's continue the discussion of `newCCResolverWrapper()`
 
 ```go
