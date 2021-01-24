@@ -9,6 +9,10 @@
   - [Dial to xDS server](#dial-to-xds-server)
   - [v3 API client](#v3-api-client)
 - [Communicate with xDS server](#communicate-with-xds-server)
+  - [First LDS request](#first-lds-request)
+  - [Prepare ADS stream](#prepare-ads-stream)
+  - [Send LDS request](#send-lds-request)
+  - [Get resource response](#get-resource-response)
 - [Transform into ServiceConfig](#transform-into-serviceconfig)
 
 The gRPC team believe that Envoy proxy (actually, any data plane) is not the only solution for service mesh. By support xDS protocol gRPC can take the role of Envoy proxy. In general gRPC wants to build a proxy-less service mesh without data plane.  See [xDS Support in gRPC - Mark D. Roth](https://www.youtube.com/watch?v=IbcJ8kNmsrE) and [Traffic Director and gRPC—proxyless services for your service mesh](https://cloud.google.com/blog/products/networking/traffic-director-supports-proxyless-grpc).
@@ -135,27 +139,27 @@ gRPC uses `XdsClient` to interact with xDS management server. `XdsClient` need a
 The following is the definition of bootstrap JSON file.
 
 ```go
-type bootstrapConfig struct {                                
-    XdsServers               []server                   `json:"xds_servers,omitempty"`                                
-    Node                     node                       `json:"node,omitempty"`                                
-    CertificateProviders     map[string]json.RawMessage `json:"certificate_providers,omitempty"`                                
-    GRPCServerResourceNameID string                     `json:"grpc_server_resource_name_id,omitempty"`                                
-}                                                                            
-                                 
-type server struct {                                
-    ServerURI      string   `json:"server_uri,omitempty"`                                            
-    ChannelCreds   []creds  `json:"channel_creds,omitempty"`                                
-    ServerFeatures []string `json:"server_features,omitempty"`                                
-}                                      
-                                                                                           
-type creds struct {                                                
-    Type   string      `json:"type,omitempty"`                                             
-    Config interface{} `json:"config,omitempty"`                                
-}                                
-                                
-type node struct {                                                                                    
-    ID string `json:"id,omitempty"`                                
-}                                                                                    
+type bootstrapConfig struct {
+    XdsServers               []server                   `json:"xds_servers,omitempty"`
+    Node                     node                       `json:"node,omitempty"`
+    CertificateProviders     map[string]json.RawMessage `json:"certificate_providers,omitempty"`
+    GRPCServerResourceNameID string                     `json:"grpc_server_resource_name_id,omitempty"`
+}
+
+type server struct {
+    ServerURI      string   `json:"server_uri,omitempty"`
+    ChannelCreds   []creds  `json:"channel_creds,omitempty"`
+    ServerFeatures []string `json:"server_features,omitempty"`
+}
+
+type creds struct {
+    Type   string      `json:"type,omitempty"`
+    Config interface{} `json:"config,omitempty"`
+}
+
+type node struct {
+    ID string `json:"id,omitempty"`
+}
 
 ```
 
@@ -262,42 +266,42 @@ func init() {
     resolver.Register(&xdsResolverBuilder{})
 }
 
-type xdsResolverBuilder struct{}                                
-                                
-// Build helps implement the resolver.Builder interface.                                
-//                                
-// The xds bootstrap process is performed (and a new xds client is built) every                                
-// time an xds resolver is built.                                
-func (b *xdsResolverBuilder) Build(t resolver.Target, cc resolver.ClientConn, opts resolver.BuildOptions) (resolver.Resolver, error) {                                
-    r := &xdsResolver{                                
-        target:         t,                                
-        cc:             cc,                                
-        closed:         grpcsync.NewEvent(),                                
-        updateCh:       make(chan suWithError, 1),                                
-        activeClusters: make(map[string]*clusterInfo),                                
-    }                                
-    r.logger = prefixLogger((r))                                
-    r.logger.Infof("Creating resolver for target: %+v", t)                                
-                                
-    client, err := newXDSClient()                                
-    if err != nil {                                
-        return nil, fmt.Errorf("xds: failed to create xds-client: %v", err)                                
-    }                                
-    r.client = client                                
-                                
-    // If xds credentials were specified by the user, but bootstrap configs do                                
-    // not contain any certificate provider configuration, it is better to fail                                
-    // right now rather than failing when attempting to create certificate                                
-    // providers after receiving an CDS response with security configuration.                                
-    var creds credentials.TransportCredentials                                
-    switch {                                
-    case opts.DialCreds != nil:                                
-        creds = opts.DialCreds                                
-    case opts.CredsBundle != nil:                                
-        creds = opts.CredsBundle.TransportCredentials()                                
-    }                                
-    if xc, ok := creds.(interface{ UsesXDS() bool }); ok && xc.UsesXDS() {                                
-        bc := client.BootstrapConfig()                                
+type xdsResolverBuilder struct{}
+
+// Build helps implement the resolver.Builder interface.
+//
+// The xds bootstrap process is performed (and a new xds client is built) every
+// time an xds resolver is built.
+func (b *xdsResolverBuilder) Build(t resolver.Target, cc resolver.ClientConn, opts resolver.BuildOptions) (resolver.Resolver, error) {
+    r := &xdsResolver{
+        target:         t,
+        cc:             cc,
+        closed:         grpcsync.NewEvent(),
+        updateCh:       make(chan suWithError, 1),
+        activeClusters: make(map[string]*clusterInfo),
+    }
+    r.logger = prefixLogger((r))
+    r.logger.Infof("Creating resolver for target: %+v", t)
+
+    client, err := newXDSClient()
+    if err != nil {
+        return nil, fmt.Errorf("xds: failed to create xds-client: %v", err)
+    }
+    r.client = client
+
+    // If xds credentials were specified by the user, but bootstrap configs do
+    // not contain any certificate provider configuration, it is better to fail
+    // right now rather than failing when attempting to create certificate
+    // providers after receiving an CDS response with security configuration.
+    var creds credentials.TransportCredentials
+    switch {
+    case opts.DialCreds != nil:
+        creds = opts.DialCreds
+    case opts.CredsBundle != nil:
+        creds = opts.CredsBundle.TransportCredentials()
+    }
+    if xc, ok := creds.(interface{ UsesXDS() bool }); ok && xc.UsesXDS() {
+        bc := client.BootstrapConfig()
         if len(bc.CertProviderConfigs) == 0 {
             return nil, errors.New("xds: xdsCreds specified but certificate_providers config missing in bootstrap file")
         }
@@ -361,17 +365,17 @@ var bootstrapNewConfig = bootstrap.NewConfig
 //
 // The xds client is a singleton. It will be shared by the xds resolver and
 // balancer implementations, across multiple ClientConns and Servers.
-type Client struct {                 
-    *clientImpl                                           
+type Client struct {
+    *clientImpl
 
     // This mu protects all the fields, including the embedded clientImpl above.
-    mu       sync.Mutex                                   
+    mu       sync.Mutex
     refCount int
 }
-                       
+
 // New returns a new xdsClient configured by the bootstrap file specified in env
 // variable GRPC_XDS_BOOTSTRAP.
-func New() (*Client, error) {                                                   
+func New() (*Client, error) {
     singletonClient.mu.Lock()
     defer singletonClient.mu.Unlock()
     // If the client implementation was created, increment ref count and return
@@ -379,7 +383,7 @@ func New() (*Client, error) {
     if singletonClient.clientImpl != nil {
         singletonClient.refCount++
         return singletonClient, nil
-    }                                                   
+    }
   
     // Create the new client implementation.
     config, err := bootstrapNewConfig()
@@ -387,14 +391,14 @@ func New() (*Client, error) {
         return nil, fmt.Errorf("xds: failed to read bootstrap file: %v", err)
     }
     c, err := newWithConfig(config, defaultWatchExpiryTimeout)
-    if err != nil {                                                                                                               
-        return nil, err                                                                                                           
-    }                                                                                                                             
-                                                                                                                                  
-    singletonClient.clientImpl = c                                                                                                
-    singletonClient.refCount++                                                                                                    
-    return singletonClient, nil                                                                                                   
-}                                                                                                                                 
+    if err != nil {
+        return nil, err
+    }
+
+    singletonClient.clientImpl = c
+    singletonClient.refCount++
+    return singletonClient, nil
+}
 
 // NewConfig returns a new instance of Config initialized by reading the
 // bootstrap file found at ${GRPC_XDS_BOOTSTRAP}.
@@ -615,9 +619,8 @@ The goal of `newWithConfig()` is to create the `XdsClient`, which connect with t
   - `getAPIClientBuilder()` uses the `config.TransportAPI` as parameter to determine which `APIClientBuilder` to use.
   - `newAPIClient()` calls `cb.Build()` to build the v2 or v3 API client.
   - We will discuss the v3 `APIClientBuilder` in next chapter.
-- After `APIClient` is ready, `c.run()` will be called to start a goroutine to process the update configuration from xDS server.
-  - `c.run()` waits on channel `c.updateCh.Get()` to read the `watcherInfoWithUpdate` message.
-  - We will discuss the `c.callCallback()` later. See [Transform into ServiceConfig](#transform-into-serviceconfig) for detail.
+- After `apiClient` is ready, `c.run()` will be called to start a goroutine.
+  - `c.run()` is responsible for async callback for watched update. See [Transform into ServiceConfig](#transform-into-serviceconfig) for detail.
 
 Lets discsuss `APIClientBuilder` in next chapter.
 
@@ -693,49 +696,49 @@ func newWithConfig(config *bootstrap.Config, watchExpiryTimeout time.Duration) (
     return c, nil
 }
 
-// Function to be overridden in tests.                                                                                     
+// Function to be overridden in tests.
 var newAPIClient = func(apiVersion version.TransportAPI, cc *grpc.ClientConn, opts BuildOptions) (APIClient, error) {
-    cb := getAPIClientBuilder(apiVersion)                                                                   
-    if cb == nil {                                                                                                                         
-        return nil, fmt.Errorf("no client builder for xDS API version: %v", apiVersion)                                 
-    }                                                                                                                                            
-    return cb.Build(cc, opts)                                                                                                                 
-}                                                                                                                                        
+    cb := getAPIClientBuilder(apiVersion)
+    if cb == nil {
+        return nil, fmt.Errorf("no client builder for xDS API version: %v", apiVersion)
+    }
+    return cb.Build(cc, opts)
+}
 
-var (                                                                                                                                     
-    m = make(map[version.TransportAPI]APIClientBuilder)                                                                  
-)                                                                                
+var (
+    m = make(map[version.TransportAPI]APIClientBuilder)
+)
 
-// RegisterAPIClientBuilder registers a client builder for xDS transport protocol                                                             
-// version specified by b.Version().                                                                                                              
-//                                                                                                                                           
-// NOTE: this function must only be called during initialization time (i.e. in                                                 
-// an init() function), and is not thread-safe. If multiple builders are                                   
-// registered for the same version, the one registered last will take effect.                              
-func RegisterAPIClientBuilder(b APIClientBuilder) {                                                                                         
-    m[b.Version()] = b                                                                                                                            
-}                                                                                                                                             
-                                                                                                                       
-// getAPIClientBuilder returns the client builder registered for the provided                                          
-// xDS transport API version.                                                                                              
-func getAPIClientBuilder(version version.TransportAPI) APIClientBuilder {                                            
-    if b, ok := m[version]; ok {                                                                            
-        return b                                                                                                                           
-    }                                                                                                                   
-    return nil                                                                                                                                   
-}                                                                                                                                             
+// RegisterAPIClientBuilder registers a client builder for xDS transport protocol
+// version specified by b.Version().
+//
+// NOTE: this function must only be called during initialization time (i.e. in
+// an init() function), and is not thread-safe. If multiple builders are
+// registered for the same version, the one registered last will take effect.
+func RegisterAPIClientBuilder(b APIClientBuilder) {
+    m[b.Version()] = b
+}
 
-// APIClientBuilder creates an xDS client for a specific xDS transport protocol                                                             
-// version.                                                                                                                                       
-type APIClientBuilder interface {                                                                                                             
-    // Build builds a transport protocol specific implementation of the xDS                                            
-    // client based on the provided clientConn to the management server and the                                        
-    // provided options.                                                                                                   
-    Build(*grpc.ClientConn, BuildOptions) (APIClient, error)                                                         
-    // Version returns the xDS transport protocol version used by clients build                             
-    // using this builder.                                                                                                                 
-    Version() version.TransportAPI                                                                                      
-}                                                                                                                                                
+// getAPIClientBuilder returns the client builder registered for the provided
+// xDS transport API version.
+func getAPIClientBuilder(version version.TransportAPI) APIClientBuilder {
+    if b, ok := m[version]; ok {
+        return b
+    }
+    return nil
+}
+
+// APIClientBuilder creates an xDS client for a specific xDS transport protocol
+// version.
+type APIClientBuilder interface {
+    // Build builds a transport protocol specific implementation of the xDS
+    // client based on the provided clientConn to the management server and the
+    // provided options.
+    Build(*grpc.ClientConn, BuildOptions) (APIClient, error)
+    // Version returns the xDS transport protocol version used by clients build
+    // using this builder.
+    Version() version.TransportAPI
+}
 
 // run is a goroutine for all the callbacks.
 //
@@ -774,42 +777,42 @@ Here is the v3 `APIClientBuilder`. Please note that v3 API is registered by the 
 In next chapter, We will continue the discussion how to communicate with xDS server.
 
 ```go
-func init() {                                          
+func init() {
     xdsclient.RegisterAPIClientBuilder(clientBuilder{})
 }
 
-var (                                                                                                                        
-    resourceTypeToURL = map[xdsclient.ResourceType]string{   
-        xdsclient.ListenerResource:    version.V3ListenerURL,                                              
-        xdsclient.RouteConfigResource: version.V3RouteConfigURL,                                            
-        xdsclient.ClusterResource:     version.V3ClusterURL,                                                                 
-        xdsclient.EndpointsResource:   version.V3EndpointsURL,                                                          
-    }                                                                                                                                         
-)                                                                                                                 
+var (
+    resourceTypeToURL = map[xdsclient.ResourceType]string{
+        xdsclient.ListenerResource:    version.V3ListenerURL,
+        xdsclient.RouteConfigResource: version.V3RouteConfigURL,
+        xdsclient.ClusterResource:     version.V3ClusterURL,
+        xdsclient.EndpointsResource:   version.V3EndpointsURL,
+    }
+)
 
-type clientBuilder struct{}                                                                                                          
-                                                                                                                                              
-func (clientBuilder) Build(cc *grpc.ClientConn, opts xdsclient.BuildOptions) (xdsclient.APIClient, error) {                               
-    return newClient(cc, opts)                                                                                                                  
-}                                                                                                                         
-                                                                                                           
-func (clientBuilder) Version() version.TransportAPI {                                                                    
-    return version.TransportV3                                                                             
-}                                                                                                          
-                                                                                                                                                   
-func newClient(cc *grpc.ClientConn, opts xdsclient.BuildOptions) (xdsclient.APIClient, error) {            
-    nodeProto, ok := opts.NodeProto.(*v3corepb.Node)                                                       
-    if !ok {                                                                                               
+type clientBuilder struct{}
+
+func (clientBuilder) Build(cc *grpc.ClientConn, opts xdsclient.BuildOptions) (xdsclient.APIClient, error) {
+    return newClient(cc, opts)
+}
+
+func (clientBuilder) Version() version.TransportAPI {
+    return version.TransportV3
+}
+
+func newClient(cc *grpc.ClientConn, opts xdsclient.BuildOptions) (xdsclient.APIClient, error) {
+    nodeProto, ok := opts.NodeProto.(*v3corepb.Node)
+    if !ok {
         return nil, fmt.Errorf("xds: unsupported Node proto type: %T, want %T", opts.NodeProto, v3corepb.Node{})
     }
-    v3c := &client{                                                                                         
-        cc:        cc,                                                                                                              
-        parent:    opts.Parent,                                                                                          
+    v3c := &client{
+        cc:        cc,
+        parent:    opts.Parent,
         nodeProto: nodeProto,
-        logger:    opts.Logger,                                                                                                                 
-    }                                                                                                       
-    v3c.ctx, v3c.cancelCtx = context.WithCancel(context.Background())                                                  
-    v3c.TransportHelper = xdsclient.NewTransportHelper(v3c, opts.Logger, opts.Backoff)                                          
+        logger:    opts.Logger,
+    }
+    v3c.ctx, v3c.cancelCtx = context.WithCancel(context.Background())
+    v3c.TransportHelper = xdsclient.NewTransportHelper(v3c, opts.Logger, opts.Backoff)
     return v3c, nil
 }
 
@@ -850,19 +853,19 @@ func (t *TransportHelper) run(ctx context.Context) {
         default:
         }
 
-        if retries != 0 {                             
+        if retries != 0 {
             timer := time.NewTimer(t.backoff(retries))
-            select {          
-            case <-timer.C:       
-            case <-ctx.Done():                        
+            select {
+            case <-timer.C:
+            case <-ctx.Done():
                 if !timer.Stop() {
                     <-timer.C
-                }             
+                }
                 return
-            }                     
+            }
         }
-                                                                     
-        retries++                                                            
+
+        retries++
         stream, err := t.vClient.NewStream(ctx)
         if err != nil {
             t.logger.Warningf("xds: ADS stream creation failed: %v", err)
@@ -900,129 +903,497 @@ func (t *TransportHelper) run(ctx context.Context) {
 func (t *TransportHelper) send(ctx context.Context) {
     var stream grpc.ClientStream
     for {
-        select {                   
-        case <-ctx.Done():              
-            return                                       
+        select {
+        case <-ctx.Done():
+            return
         case stream = <-t.streamCh:
             if !t.sendExisting(stream) {
                 // send failed, clear the current stream.
                 stream = nil
             }
         case u := <-t.sendCh.Get():
-            t.sendCh.Load()                    
-                                                   
-            var (                            
+            t.sendCh.Load()
+
+            var (
                 target                 []string
                 rType                  ResourceType
                 version, nonce, errMsg string
                 send                   bool
-            )                                                             
+            )
             switch update := u.(type) {
-            case *watchAction:                                                        
+            case *watchAction:
                 target, rType, version, nonce = t.processWatchInfo(update)
-            case *ackAction:               
+            case *ackAction:
                 target, rType, version, nonce, send = t.processAckInfo(update, stream)
-                if !send {             
-                    continue                                                          
-                }                                                         
-                errMsg = update.errMsg                                                
-            }                                                                         
+                if !send {
+                    continue
+                }
+                errMsg = update.errMsg
+            }
             if stream == nil {
                 // There's no stream yet. Skip the request. This request
                 // will be resent to the new streams. If no stream is
                 // created, the watcher will timeout (same as server not
                 // sending response back).
-                continue                                                
-            }                                                           
+                continue
+            }
             if err := t.vClient.SendRequest(stream, target, rType, version, nonce, errMsg); err != nil {
                 t.logger.Warningf("ADS request for {target: %q, type: %v, version: %q, nonce: %q} failed: %v", target, rType, version, nonce, err)
                 // send failed, clear the current stream.
                 stream = nil
-            }                                                                                           
-        }                                                                                                                                         
-    }                                                                                                                                             
-}                                                        
+            }
+        }
+    }
+}
 ```
 
 ## Communicate with xDS server
 
-## Transform into ServiceConfig
+Now the connection with xDS server is ready. Let's discuss how gRPC communicates with the xDS server via ADS v3 API. Here is another map for this stage. In this map:
 
-### Code
+- yellow box represents the important type and method/function.
+- Green box represents a function run in a dedicated goroutine.
+- Arrow represents the call direction and order.
+- Red dot means there is another map to be continue for that box.
+- Blue bar and arrow represents the channel communication for `t.sendCh`.
+- Green bar and arrow represents the channel communication for `t.streamCh`.
 
-<!--
-in case we need it. 
+![xDS protocol: 2](../images/images.010.png)
 
-  - `run()` calls `t.vClient.NewStream()` to start an ADS stream `stream`. `t.vClient.NewStream()` is actually v3 `client.NewStream()`.
-    - `client.NewStream()` calls `v3adsgrpc.NewAggregatedDiscoveryServiceClient()` to get the `aggregatedDiscoveryServiceClient`.
-    - Then calls `aggregatedDiscoveryServiceClient.StreamAggregatedResources()` method. In `StreamAggregatedResources()`, `c.cc.NewStream()` will be called to create a bi-direction stream with the xDS server. Then `aggregatedDiscoveryServiceStreamAggregatedResourcesClient` is built with the new stream.
-    - The returned `aggregatedDiscoveryServiceStreamAggregatedResourcesClient` object implements `AggregatedDiscoveryService_StreamAggregatedResourcesClient` interface.
-  - `run()` checks and cleans the `t.streamCh` and send the new `stream` to `t.streamCh`
-  - `run()` calls `t.recv()` and uses the `stream` as parameter.
--->
+In this stage, we will accomplish the following job:
+
+- Send the first ADS request to xDS server.
+- Receive the response from xDS server and send ACK/NACK.
+- Handle xDS response to prepare the update.
+
+### First LDS request
+
+According to the xDS protocol, client need to send the first ADS request to identify itself and specify resource name. In `xdsResolverBuilder.Build()`, `watchService()` will be called after `newXDSClient()` returns.
+
+- `watchService()` builds a `serviceUpdateWatcher`, note that:
+  - The value of `w.serviceCb` field is `xdsResolver.handleServiceUpdate()`.
+  - The value of `w.serviceName` field is `example.grpc.io` in our case.
+- `watchService()` call `c.WatchListener()`, which actually calls `clientImpl.WatchListener`. note that:
+  - The argument of `cb` parameter is `serviceUpdateWatcher.handleLDSResp()`
+- `WatchListener()` builds a `watchInfo` object, note that:
+  - The value of `wi.ldsCallback` field is `serviceUpdateWatcher.handleLDSResp()`.
+  - The value of `wi.rType` field is `ListenerResource`.
+  - The value of `wi.target` field is `example.grpc.io` in our case.
+- `WatchListener()` calls `c.watch()`, which actually calls `clientImpl.watch()`.
+- `watch()` adds `*watchInfo` to `c.ldsWatchers()`. This is the new watcher. `c.apiClient.AddWatch()` will be called.
+  - Calls `c.apiClient.AddWatch()`, which actually calls `TransportHelper.AddWatch()`.
+  - `AddWatch()` simply sends a `watchAction` to unbounded buffer `t.sendCh`.
+- Now the resource is not in cache, `watch()` skips the remain part to return.
+
+After the invocation of `watch()`, `c.ldsWatchers()` got a new `watchInfo` record under the `wi.target` name.
 
 ```go
+// watchService uses LDS and RDS to discover information about the provided
+// serviceName.
+//
+// Note that during race (e.g. an xDS response is received while the user is
+// calling cancel()), there's a small window where the callback can be called
+// after the watcher is canceled. The caller needs to handle this case.
+func watchService(c xdsClientInterface, serviceName string, cb func(serviceUpdate, error), logger *grpclog.PrefixLogger) (cancel func()) {
+    w := &serviceUpdateWatcher{
+        logger:      logger,
+        c:           c,
+        serviceName: serviceName,
+        serviceCb:   cb,
+    }
+    w.ldsCancel = c.WatchListener(serviceName, w.handleLDSResp)
 
+    return w.close
+}
+
+
+// WatchListener uses LDS to discover information about the provided listener.
+//
+// Note that during race (e.g. an xDS response is received while the user is
+// calling cancel()), there's a small window where the callback can be called
+// after the watcher is canceled. The caller needs to handle this case.
+func (c *clientImpl) WatchListener(serviceName string, cb func(ListenerUpdate, error)) (cancel func()) {
+    wi := &watchInfo{
+        c:           c,
+        rType:       ListenerResource,
+        target:      serviceName,
+        ldsCallback: cb,
+    }
+
+    wi.expiryTimer = time.AfterFunc(c.watchExpiryTimeout, func() {
+        wi.timeout()
+    })
+    return c.watch(wi)
+}
+
+func (c *clientImpl) watch(wi *watchInfo) (cancel func()) {
+    c.mu.Lock()
+    defer c.mu.Unlock() 
+    c.logger.Debugf("new watch for type %v, resource name %v", wi.rType, wi.target)
+    var watchers map[string]map[*watchInfo]bool
+    switch wi.rType {
+    case ListenerResource:
+        watchers = c.ldsWatchers
+    case RouteConfigResource:
+        watchers = c.rdsWatchers
+    case ClusterResource:
+        watchers = c.cdsWatchers
+    case EndpointsResource:
+        watchers = c.edsWatchers
+    }
+
+    resourceName := wi.target
+    s, ok := watchers[wi.target]
+    if !ok {
+        // If this is a new watcher, will ask lower level to send a new request
+        // with the resource name.
+        //
+        // If this (type+name) is already being watched, will not notify the
+        // underlying versioned apiClient.
+        c.logger.Debugf("first watch for type %v, resource name %v, will send a new xDS request", wi.rType, wi.target)
+        s = make(map[*watchInfo]bool)
+        watchers[resourceName] = s
+        c.apiClient.AddWatch(wi.rType, resourceName)
+    }
+    // No matter what, add the new watcher to the set, so it's callback will be
+    // call for new responses.
+    s[wi] = true
+
+    // If the resource is in cache, call the callback with the value.
+    switch wi.rType {
+    case ListenerResource:
+        if v, ok := c.ldsCache[resourceName]; ok {
+            c.logger.Debugf("LDS resource with name %v found in cache: %+v", wi.target, v)
+            wi.newUpdate(v)
+        }
+    case RouteConfigResource:
+        if v, ok := c.rdsCache[resourceName]; ok {
+            c.logger.Debugf("RDS resource with name %v found in cache: %+v", wi.target, v)
+            wi.newUpdate(v)
+        }
+    case ClusterResource:
+        if v, ok := c.cdsCache[resourceName]; ok {
+            c.logger.Debugf("CDS resource with name %v found in cache: %+v", wi.target, v)
+            wi.newUpdate(v)
+        }
+    case EndpointsResource:
+        if v, ok := c.edsCache[resourceName]; ok {
+            c.logger.Debugf("EDS resource with name %v found in cache: %+v", wi.target, v)
+            wi.newUpdate(v)
+        }
+    }
+
+    return func() {
+        c.logger.Debugf("watch for type %v, resource name %v canceled", wi.rType, wi.target)
+        wi.cancel()
+        c.mu.Lock()
+        defer c.mu.Unlock()
+        if s := watchers[resourceName]; s != nil {
+            // Remove this watcher, so it's callback will not be called in the
+            // future.
+            delete(s, wi)
+            if len(s) == 0 {
+                c.logger.Debugf("last watch for type %v, resource name %v canceled, will send a new xDS request", wi.rType, wi.target)
+                // If this was the last watcher, also tell xdsv2Client to stop
+                // watching this resource.
+                delete(watchers, resourceName)
+                c.apiClient.RemoveWatch(wi.rType, resourceName)
+                // Remove the resource from cache. When a watch for this
+                // resource is added later, it will trigger a xDS request with
+                // resource names, and client will receive new xDS responses.
+                switch wi.rType {
+                case ListenerResource:
+                    delete(c.ldsCache, resourceName)
+                case RouteConfigResource:
+                    delete(c.rdsCache, resourceName)
+                case ClusterResource:
+                    delete(c.cdsCache, resourceName)
+                case EndpointsResource:
+                    delete(c.edsCache, resourceName)
+                }
+            }
+        }
+    }
+}
+
+// AddWatch adds a watch for an xDS resource given its type and name.
+func (t *TransportHelper) AddWatch(rType ResourceType, resourceName string) {
+    t.sendCh.Put(&watchAction{
+        rType:    rType,
+        remove:   false,
+        resource: resourceName,
+    })
+}
+
+```
+
+### Prepare ADS stream
+
+In `xDS protocol:2` map, `TransportHelper.send()` is waiting for the `t.sendCh` channel. But `send()` needs a `stream` to send the request. `run()` will create the `stream` for `send()` and `run()`. Let's see `run()` goroutine first.
+
+- `run()` calls `t.vClient.NewStream()` to create a ADS stream `stream`.  `t.vClient.NewStream()` is actually v3 `client.NewStream()`.
+  - `client.NewStream()` calls `v3adsgrpc.NewAggregatedDiscoveryServiceClient()` to get the `aggregatedDiscoveryServiceClient`.
+  - Then calls its `StreamAggregatedResources()` method.
+  - In `StreamAggregatedResources()`, `c.cc.NewStream()` will be called to create a bi-direction stream with the xDS server.
+  - Please note the stream method is `/envoy.service.discovery.v3.AggregatedDiscoveryService/StreamAggregatedResources`
+  - In `StreamAggregatedResources()`, then `aggregatedDiscoveryServiceStreamAggregatedResourcesClient` is built with the new stream.
+  - The `aggregatedDiscoveryServiceStreamAggregatedResourcesClient` object implements `AggregatedDiscoveryService_StreamAggregatedResourcesClient` interface.
+- `run()` checks and cleans the `t.streamCh` and send the new `stream` to `t.streamCh`
+- `run()` calls `t.recv()` and uses the `stream` as parameter to get the response from xDS server.
+
+Now the stream is ready, let's discuss `send()` in detail.
+
+```go
 func (v3c *client) NewStream(ctx context.Context) (grpc.ClientStream, error) {
     return v3adsgrpc.NewAggregatedDiscoveryServiceClient(v3c.cc).StreamAggregatedResources(v3c.ctx, grpc.WaitForReady(true))
-}                                                                                                                                                
+} 
 
-// AggregatedDiscoveryServiceClient is the client API for AggregatedDiscoveryService service.                                       
-//                                                                                                                                             
+// AggregatedDiscoveryServiceClient is the client API for AggregatedDiscoveryService service.
+// 
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://godoc.org/google.golang.org/grpc#ClientConn.NewStream.
 type AggregatedDiscoveryServiceClient interface {
-    // This is a gRPC-only API.                                                                                   
+    // This is a gRPC-only API. 
     StreamAggregatedResources(ctx context.Context, opts ...grpc.CallOption) (AggregatedDiscoveryService_StreamAggregatedResourcesClient, error)
     DeltaAggregatedResources(ctx context.Context, opts ...grpc.CallOption) (AggregatedDiscoveryService_DeltaAggregatedResourcesClient, error)
-}                                                                                                                                   
-                                                                                                                            
-type aggregatedDiscoveryServiceClient struct {                                                          
-    cc grpc.ClientConnInterface                 
-}                                                                                                                 
-                                                                              
-func NewAggregatedDiscoveryServiceClient(cc grpc.ClientConnInterface) AggregatedDiscoveryServiceClient {                    
-    return &aggregatedDiscoveryServiceClient{cc}                                                                                                 
-}
-                                                                                                                                                     
-func (c *aggregatedDiscoveryServiceClient) StreamAggregatedResources(ctx context.Context, opts ...grpc.CallOption) (AggregatedDiscoveryService_StreamAggregatedResourcesClient, error) {                                                                                 
-    stream, err := c.cc.NewStream(ctx, &_AggregatedDiscoveryService_serviceDesc.Streams[0], "/envoy.service.discovery.v3.AggregatedDiscoveryService/StreamAggregatedResources", opts...)                                                                                            
-    if err != nil {                                                                                                                 
-        return nil, err                                                                                                     
-    }                                                                                                                                               
-    x := &aggregatedDiscoveryServiceStreamAggregatedResourcesClient{stream}                                                                        
-    return x, nil                                                                                                 
-}
-func (c *aggregatedDiscoveryServiceClient) DeltaAggregatedResources(ctx context.Context, opts ...grpc.CallOption) (AggregatedDiscoveryService_DeltaAggregatedResourcesClient, error) {                                                                                                                  
-    stream, err := c.cc.NewStream(ctx, &_AggregatedDiscoveryService_serviceDesc.Streams[1], "/envoy.service.discovery.v3.AggregatedDiscoveryService/DeltaAggregatedResources", opts...)                                                                                             
-    if err != nil {                                                                                                                            
-        return nil, err                                                                                                          
-    }                                                                                                         
-    x := &aggregatedDiscoveryServiceDeltaAggregatedResourcesClient{stream}                                                                         
-    return x, nil                                                                                                                   
-}                                                                                                              
+} 
 
-type AggregatedDiscoveryService_StreamAggregatedResourcesClient interface {                                                 
-    Send(*DiscoveryRequest) error                                                                             
-    Recv() (*DiscoveryResponse, error)                                                                                     
-    grpc.ClientStream                                                                                                                           
+type aggregatedDiscoveryServiceClient struct {
+    cc grpc.ClientConnInterface
 }
-                                                                                                              
-type aggregatedDiscoveryServiceStreamAggregatedResourcesClient struct {                                       
-    grpc.ClientStream                                                                                                       
+
+func NewAggregatedDiscoveryServiceClient(cc grpc.ClientConnInterface) AggregatedDiscoveryServiceClient {
+    return &aggregatedDiscoveryServiceClient{cc}
 }
-                                                                                                                             
-func (x *aggregatedDiscoveryServiceStreamAggregatedResourcesClient) Send(m *DiscoveryRequest) error {         
-    return x.ClientStream.SendMsg(m)                                                                                        
-}                                                                                                             
-                                                                                                              
-func (x *aggregatedDiscoveryServiceStreamAggregatedResourcesClient) Recv() (*DiscoveryResponse, error) {                    
-    m := new(DiscoveryResponse)                                                                               
+
+func (c *aggregatedDiscoveryServiceClient) StreamAggregatedResources(ctx context.Context, opts ...grpc.CallOption) (AggregatedDiscoveryService_StreamAggregatedResourcesClient, error) {
+    stream, err := c.cc.NewStream(ctx, &_AggregatedDiscoveryService_serviceDesc.Streams[0], "/envoy.service.discovery.v3.AggregatedDiscoveryService/StreamAggregatedResources", opts...)
+    if err != nil {
+        return nil, err
+    }
+    x := &aggregatedDiscoveryServiceStreamAggregatedResourcesClient{stream}
+    return x, nil
+}
+func (c *aggregatedDiscoveryServiceClient) DeltaAggregatedResources(ctx context.Context, opts ...grpc.CallOption) (AggregatedDiscoveryService_DeltaAggregatedResourcesClient, error) {
+    stream, err := c.cc.NewStream(ctx, &_AggregatedDiscoveryService_serviceDesc.Streams[1], "/envoy.service.discovery.v3.AggregatedDiscoveryService/DeltaAggregatedResources", opts...)
+    if err != nil {
+        return nil, err
+    }
+    x := &aggregatedDiscoveryServiceDeltaAggregatedResourcesClient{stream}
+    return x, nil
+}
+
+type AggregatedDiscoveryService_StreamAggregatedResourcesClient interface {
+    Send(*DiscoveryRequest) error
+    Recv() (*DiscoveryResponse, error)
+    grpc.ClientStream
+}
+
+type aggregatedDiscoveryServiceStreamAggregatedResourcesClient struct {
+    grpc.ClientStream
+}
+
+func (x *aggregatedDiscoveryServiceStreamAggregatedResourcesClient) Send(m *DiscoveryRequest) error {
+    return x.ClientStream.SendMsg(m)
+}
+
+func (x *aggregatedDiscoveryServiceStreamAggregatedResourcesClient) Recv() (*DiscoveryResponse, error) {
+    m := new(DiscoveryResponse)
     if err := x.ClientStream.RecvMsg(m); err != nil {
         return nil, err
     }
     return m, nil
 }
+```
 
+### Send LDS request
+
+`TransportHelper.send()` will receive the `stream` from `t.streamCh`, which is sent by `TransportHelper.run()`.
+
+- `send()` keeps reading from channel `t.streamCh`. If we got the `stream` data, `t.sendExisting()` will be called.
+- `send()` keeps reading from channel `t.sendCh.Get()` to get the `watchAction` or `ackAction` data.
+- For `watchAction`, that is our case, `t.processWatchInfo()` will be called.
+  - `processWatchInfo()` updates `t.watchMap` and prepares parameters for xDS request.
+  - This means for any resource request. `send()` can send it as soon as `send()` receive the `watchAction`.
+- For `ackAction`, `t.processAckInfo()` will be called.
+  - `processAckInfo()` prepares parameters for the xDS ACK/NACK.
+  - This means for any ACK/NACK, `send()` can send it as soon as `send()` receive the `ackAction`.
+- At last, `t.vClient.SendRequest()` will be called with processed parameters.
+  - `SendRequest()` uses`stream.Send()` to send the message to the xDS server.
+
+Now the first LDS request is finally sent to the xDS server. Next, let's discuss the get response from xDS server.
+
+```go
+// processWatchInfo pulls the fields needed by the request from a watchAction.
+// 
+// It also updates the watch map.
+func (t *TransportHelper) processWatchInfo(w *watchAction) (target []string, rType ResourceType, ver, nonce string) {
+    t.mu.Lock()
+    defer t.mu.Unlock()
+
+    var current map[string]bool
+    current, ok := t.watchMap[w.rType]
+    if !ok {
+        current = make(map[string]bool)
+        t.watchMap[w.rType] = current
+    }
+
+    if w.remove {
+        delete(current, w.resource)
+        if len(current) == 0 {
+            delete(t.watchMap, w.rType)
+        }
+    } else {
+        current[w.resource] = true
+    }
+
+    rType = w.rType
+    target = mapToSlice(current)
+    // We don't reset version or nonce when a new watch is started. The version
+    // and nonce from previous response are carried by the request unless the
+    // stream is recreated.
+    ver = t.versionMap[rType]
+    nonce = t.nonceMap[rType]
+    return target, rType, ver, nonce
+}
+
+type watchAction struct {
+    rType    ResourceType
+    remove   bool // Whether this is to remove watch for the resource.
+    resource string
+}
+
+func mapToSlice(m map[string]bool) (ret []string) {
+    for i := range m {
+        ret = append(ret, i)
+    }
+    return
+}
+
+// processAckInfo pulls the fields needed by the ack request from a ackAction.
+//
+// If no active watch is found for this ack, it returns false for send.
+func (t *TransportHelper) processAckInfo(ack *ackAction, stream grpc.ClientStream) (target []string, rType ResourceType, version, nonce string, send bool) {
+    if ack.stream != stream {
+        // If ACK's stream isn't the current sending stream, this means the ACK
+        // was pushed to queue before the old stream broke, and a new stream has
+        // been started since. Return immediately here so we don't update the
+        // nonce for the new stream.
+        return nil, UnknownResource, "", "", false
+    }
+    rType = ack.rType
+
+    t.mu.Lock()
+    defer t.mu.Unlock()
+
+    // Update the nonce no matter if we are going to send the ACK request on
+    // wire. We may not send the request if the watch is canceled. But the nonce
+    // needs to be updated so the next request will have the right nonce.
+    nonce = ack.nonce
+    t.nonceMap[rType] = nonce
+
+    s, ok := t.watchMap[rType]
+    if !ok || len(s) == 0 {
+        // We don't send the request ack if there's no active watch (this can be
+        // either the server sends responses before any request, or the watch is
+        // canceled while the ackAction is in queue), because there's no resource
+        // name. And if we send a request with empty resource name list, the
+        // server may treat it as a wild card and send us everything.
+        return nil, UnknownResource, "", "", false
+    }
+    send = true
+    target = mapToSlice(s)
+
+    version = ack.version
+    if version == "" {
+        // This is a nack, get the previous acked version.
+        version = t.versionMap[rType]
+        // version will still be an empty string if rType isn't
+        // found in versionMap, this can happen if there wasn't any ack
+        // before.
+    } else {
+        t.versionMap[rType] = version
+    }
+    return target, rType, version, nonce, send
+}
+
+type ackAction struct {
+    rType   ResourceType
+    version string // NACK if version is an empty string.
+    nonce   string
+    errMsg  string // Empty unless it's a NACK.
+    // ACK/NACK are tagged with the stream it's for. When the stream is down,
+    // all the ACK/NACK for this stream will be dropped, and the version/nonce
+    // won't be updated.
+    stream grpc.ClientStream
+}
+
+// sendRequest sends out a DiscoveryRequest for the given resourceNames, of type
+// rType, on the provided stream.
+//
+// version is the ack version to be sent with the request
+// - If this is the new request (not an ack/nack), version will be empty.
+// - If this is an ack, version will be the version from the response.
+// - If this is a nack, version will be the previous acked version (from
+//   versionMap). If there was no ack before, it will be empty.
+func (v3c *client) SendRequest(s grpc.ClientStream, resourceNames []string, rType xdsclient.ResourceType, version, nonce, errMsg string) error {
+    stream, ok := s.(adsStream)
+    if !ok {
+        return fmt.Errorf("xds: Attempt to send request on unsupported stream type: %T", s)
+    }
+    req := &v3discoverypb.DiscoveryRequest{
+        Node:          v3c.nodeProto,
+        TypeUrl:       resourceTypeToURL[rType],
+        ResourceNames: resourceNames,
+        VersionInfo:   version,
+        ResponseNonce: nonce,
+    }
+    if errMsg != "" {
+        req.ErrorDetail = &statuspb.Status{
+            Code: int32(codes.InvalidArgument), Message: errMsg,
+        }
+    }
+    if err := stream.Send(req); err != nil {
+        return fmt.Errorf("xds: stream.Send(%+v) failed: %v", req, err)
+    }
+    v3c.logger.Debugf("ADS request sent: %v", req)
+    return nil
+}
+
+// sendExisting sends out xDS requests for registered watchers when recovering
+// from a broken stream.
+//
+// We call stream.Send() here with the lock being held. It should be OK to do
+// that here because the stream has just started and Send() usually returns
+// quickly (once it pushes the message onto the transport layer) and is only
+// ever blocked if we don't have enough flow control quota.
+func (t *TransportHelper) sendExisting(stream grpc.ClientStream) bool {
+    t.mu.Lock()
+    defer t.mu.Unlock()
+
+    // Reset the ack versions when the stream restarts.
+    t.versionMap = make(map[ResourceType]string)
+    t.nonceMap = make(map[ResourceType]string)
+
+    for rType, s := range t.watchMap {
+        if err := t.vClient.SendRequest(stream, mapToSlice(s), rType, "", "", ""); err != nil {
+            t.logger.Errorf("ADS request failed: %v", err)
+            return false
+        }
+    }
+
+    return true
+}
+```
+
+## Get resource response
+
+Next, let's discuss `t.recv()` in detail.
+
+## Transform into ServiceConfig
+
+### Code
+
+```go
 func (c *clientImpl) callCallback(wiu *watcherInfoWithUpdate) {
     c.mu.Lock()
     // Use a closure to capture the callback and type assertion, to save one
@@ -1031,19 +1402,19 @@ func (c *clientImpl) callCallback(wiu *watcherInfoWithUpdate) {
     // The callback must be called without c.mu. Otherwise if the callback calls
     // another watch() inline, it will cause a deadlock. This leaves a small
     // window that a watcher's callback could be called after the watcher is
-    // canceled, and the user needs to take care of it.                              
-    var ccb func()                        
+    // canceled, and the user needs to take care of it.
+    var ccb func()
     switch wiu.wi.rType {
-    case ListenerResource:                                   
+    case ListenerResource:
         if s, ok := c.ldsWatchers[wiu.wi.target]; ok && s[wiu.wi] {
             ccb = func() { wiu.wi.ldsCallback(wiu.update.(ListenerUpdate), wiu.err) }
-        }                   
+        }
     case RouteConfigResource:
-        if s, ok := c.rdsWatchers[wiu.wi.target]; ok && s[wiu.wi] {            
+        if s, ok := c.rdsWatchers[wiu.wi.target]; ok && s[wiu.wi] {
             ccb = func() { wiu.wi.rdsCallback(wiu.update.(RouteConfigUpdate), wiu.err) }
-        }                                                                   
+        }
     case ClusterResource:
-        if s, ok := c.cdsWatchers[wiu.wi.target]; ok && s[wiu.wi] {             
+        if s, ok := c.cdsWatchers[wiu.wi.target]; ok && s[wiu.wi] {
             ccb = func() { wiu.wi.cdsCallback(wiu.update.(ClusterUpdate), wiu.err) }
         }
     case EndpointsResource:
