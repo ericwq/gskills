@@ -2,17 +2,20 @@
 # xDS protocol support
 
 - [Protocol buffers map for xDS v3 API](#protocol-buffers-map-for-xds-v3-api)
-- [xDS bootstrap file](#xds-bootstrap-file)
-- [`xdsResolverBuilder`](#xdsresolverbuilder)
-- [Prepare `Config` from bootstrap file](##prepare-config-from-bootstrap-file)
-- [Dial to xDS server](#dial-to-xds-server)
-- [Process the update from xDS server](#process-the-update-from-xds-server)
+- [Connect with xDS Server](#connect-with-xds-server)
+  - [xDS bootstrap file](#xds-bootstrap-file)
+  - [`xdsResolverBuilder`](#xdsresolverbuilder)
+  - [Prepare `Config` from bootstrap file](#prepare-config-from-bootstrap-file)
+  - [Dial to xDS server](#dial-to-xds-server)
+  - [v3 API client](#v3-api-client)
+- [Communicate with xDS server](#communicate-with-xds-server)
+- [Transform into ServiceConfig](#transform-into-serviceconfig)
 
 The gRPC team believe that Envoy proxy (actually, any data plane) is not the only solution for service mesh. By support xDS protocol gRPC can take the role of Envoy proxy. In general gRPC wants to build a proxy-less service mesh without data plane.  See [xDS Support in gRPC - Mark D. Roth](https://www.youtube.com/watch?v=IbcJ8kNmsrE) and [Traffic Director and gRPC—proxyless services for your service mesh](https://cloud.google.com/blog/products/networking/traffic-director-supports-proxyless-grpc).
 
 From the view of data plane API, envoy proxy is a client. gRPC is another different client, while gRPC only supports partial capability of Envoy proxy. Although they are different client with different design goal, they may share the same management server (control plane) and the same data plane API.  
 
-The following is the design document for xDS protocol support. It's a good start point to understand the code. While it's not easy to understand these documents if you are not familiar with Envoy proxy. It took me several weeks to read the [Envoy document](https://www.envoyproxy.io/docs/envoy/latest/about_docs) and [xDS REST and gRPC protocol](https://www.envoyproxy.io/docs/envoy/latest/api-docs/xds_protocol) before the following documents.
+The following is the design document for xDS protocol support. It's a good start point to understand the code. It's not easy to understand these documents if you are not familiar with Envoy proxy. It took me several weeks to read the [Envoy document](https://www.envoyproxy.io/docs/envoy/latest/about_docs) and [xDS REST and gRPC protocol](https://www.envoyproxy.io/docs/envoy/latest/api-docs/xds_protocol) before the following documents.
 
 - [xDS-Based Global Load Balancing](https://github.com/grpc/proposal/blob/master/A27-xds-global-load-balancing.md)
 - [Load Balancing Policy Configuration](https://github.com/grpc/proposal/blob/master/A24-lb-policy-config.md)
@@ -25,11 +28,18 @@ There are [four variants of the xDS Transport Protocol](https://www.envoyproxy.i
 
 "In the future, we may add support for the incremental ADS variant of xDS. However, we have no plans to support any non-aggregated variants of xDS, nor do we plan to support REST or filesystem subscription."
 
-[RouteConfiguration](https://github.com/envoyproxy/envoy/blob/9e83625b16851cdc7e4b0a4483b0ce07c33ba76b/api/envoy/api/v2/route.proto#L24) in Envoy is different thing from [ServiceConfig](https://github.com/grpc/grpc-proto/blob/master/grpc/service_config/service_config.proto) in gRPC. While gRPC intends to populate `ServiceConfig` with the data from `RouteConfiguration`.  
+For xDS protocol support, `RouteConfiguration` and `ServiceConfig` are important data structure. Envoy's [RouteConfiguration](https://github.com/envoyproxy/envoy/blob/9e83625b16851cdc7e4b0a4483b0ce07c33ba76b/api/envoy/api/v2/route.proto#L24) is different from gRPC's [ServiceConfig](https://github.com/grpc/grpc-proto/blob/master/grpc/service_config/service_config.proto). While gRPC intends to populate `ServiceConfig` with the data from `RouteConfiguration`. In brief summary:
+
+- Utilizes bootstrap file to create the connection with xDS server.
+- Communicates with xDS server to get the `RouteConfiguration`.
+- Transform `RouteConfiguration` into `ServiceConfig`.
+- Use `ServiceConfig` and balancer to make the business RPC call.
+
+Before jump into the code, Let's prepare some maps to avoid lost in the code sea. Later you will need more maps. Envoy is a huge complex projct. xDS support is try to implement part of Envoy features. Which means xDS protocol support in gRPC is also a complex project.
 
 ## Protocol buffers map for xDS v3 API
 
-I found adding the following information can help me to understand the relationship between xDS data structure. It is easy to get lost.  Especially for a Envoy newbie. Note that `static_resources` is not used in xDS protocol instead it uses `dynamic_resources`. Yet xDS share the same proto (data structure) with static configuration.  
+I found adding the following information can help me to understand the relationship between xDS data structure. It is easy to get lost.  Especially for a Envoy newbie. Note that `static_resources` is not used in xDS protocol, instead it uses `dynamic_resources`. Yet xDS share the same proto (data structure) with static configuration.  
 
 - LDS: [Listener](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/listener/v3/listener.proto#config-listener-v3-listener) -> [filter_chains](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/listener/v3/listener_components.proto#envoy-v3-api-msg-config-listener-v3-filterchain) -> [filters](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/listener/v3/listener_components.proto#envoy-v3-api-msg-config-listener-v3-filter) -> [HTTP connection manager](https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/filters/network/http_connection_manager/v3/http_connection_manager.proto#envoy-v3-api-msg-extensions-filters-network-http-connection-manager-v3-httpconnectionmanager) -> [route_config](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/route/v3/route.proto#envoy-v3-api-msg-config-route-v3-routeconfiguration) RouteConfiguration
 - RDS: [RouteConfiguration](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/route/v3/route.proto#envoy-v3-api-msg-config-route-v3-routeconfiguration) -> [virtual_hosts](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/route/v3/route_components.proto#envoy-v3-api-msg-config-route-v3-virtualhost) -> [routes](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/route/v3/route_components.proto#envoy-v3-api-msg-config-route-v3-route) -> [route](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/route/v3/route_components.proto#envoy-v3-api-msg-config-route-v3-routeaction) -> cluster: name
@@ -101,7 +111,24 @@ Example YAML:
         sni: www.envoyproxy.io
 ```
 
-## xDS bootstrap file
+## Connect with xDS Server
+
+In this stage, we will utilizes bootstrap file to create the connection with xDS server. Here is another map for this stage.  In this map:
+
+- yellow box represents the important type and method/function.
+- green box represents a function run in a dedicated goroutine.
+- arrow represents the call direction and order.
+- red dot means there is another map to be continue for that box.
+
+![xDS protocol: 1](../images/images.009.png)
+
+In this stage, we will accomplish the following job:
+
+- Uses xDS resolver builder to build the xDS resolver.
+- Creates the xDS client to connect with the xDS server.
+- Prepares for the response from xDS server.
+
+### xDS bootstrap file
 
 gRPC uses `XdsClient` to interact with xDS management server. `XdsClient` need a bootstrap file which is a JSON file. The bootstrap file is determined via the `GRPC_XDS_BOOTSTRAP` environment variable.  
 
@@ -215,13 +242,13 @@ admin:
       address: 0.0.0.0
 ```
 
-## `xdsResolverBuilder`
+### `xdsResolverBuilder`
 
 If the user application uses `xds:///example.grpc.io` as target URI, gRPC will start the `XdsClient` initialization process. `xdsResolverBuilder.Build()` will be called to prepare for the interaction with xDS server and return the resolver to gRPC.
 
-- Calls `newXDSClient()` to build the `XdsClient`.
-- Calls `watchService()` to register a watch? TODO
-- Starts a goroutine `r.run()` to receive the service update. TODO
+- `Build()` calls `newXDSClient()` to build the `XdsClient`.
+- `Build()` calls `watchService()` to register a watch. See [Communicate with xDS server](#communicate-with-xds-server) for detail.
+- `Build()` starts a goroutine `r.run()` to receive the service update. See [Transform into ServiceConfig](#transform-into-serviceconfig) for detail.
 
 Let's discuss the `newXDSClient()` in detail next.
 
@@ -295,28 +322,30 @@ func (*xdsResolverBuilder) Scheme() string {
 
 ```
 
-## Prepare `Config` from bootstrap file
+### Prepare `Config` from bootstrap file
 
-`newXDSClient()` is a wrapper for `Client.New()`. `Client` is a singleton and a wrapper for `clientImpl` and maintains the `refcount`.
+`newXDSClient()` is a wrapper for `Client.New()`. `Client` is a singleton and a wrapper for `clientImpl` and maintains the reference count `refcount` to itself.
 
 - `Client.New()` calls `bootstrapNewConfig()` to read the file specified in `GRPC_XDS_BOOTSTRAP` environment variable. It returns a `bootstrap.Config`. Which means `bootstrapNewConfig()` reads the bootstrap file and converts the content into `bootstrap.Config`. `bootstrap.Config` is an internal data structure for xDS client.
-  - `bootstrapNewConfig()` is actually `bootstrap.NewConfig()`, which in turn is `Config.NewConfig()`.
+  - `bootstrapNewConfig()` is `bootstrap.NewConfig()`, which is actually `Config.NewConfig()`.
   - `Config.NewConfig()` calls `bootstrapConfigFromEnvVariable()` to read the file specified in either `GRPC_XDS_BOOTSTRAP` or `GRPC_XDS_BOOTSTRAP_CONFIG`
   - Here we does not show the code of `bootstrapConfigFromEnvVariable()`. It's simple enough.
-  - `Config.NewConfig()` use JSON decoder to decode the bootstrap data into:
+  - Then `Config.NewConfig()` uses JSON decoder to decode the bootstrap data into `config` object.
     - `config.NodeProto` copies from `node`, note: the `node` data is transformed from JSON to `v3.Node proto`.
     - `config.BalancerName` copies from the first `server_uri`,
     - `config.Creds` comes from the first `channel_creds`,
     - `config.CertProviderConfigs` comes from `certificate_providers`
     - `config.ServerResourceNameID` comes from `grpc_server_resource_name_id`
-  - `config.TransportAPI` is `version.TransportV2` by default. If the Server supports v3 and `GRPC_XDS_EXPERIMENTAL_V3_SUPPORT` is true, `config.TransportAPI` is `version.TransportV3`
+    - `config.TransportAPI` is `version.TransportV2` by default. If the Server supports v3 and `GRPC_XDS_EXPERIMENTAL_V3_SUPPORT` is true, `config.TransportAPI` is `version.TransportV3`
   - `Config.NewConfig()` calls `config.updateNodeProto()` to automatically fill in some fields of `NodeProto`.
     - `config.updateNodeProto()` supports both xDS v2 and v3. We will explain it in v3 because v2 is no longer support by Envoy.
     - `UserAgentName` get the value `"gRPC Go"`
     - `UserAgentVersionType` get the value `{"userAgentVersion":"1.36.0-dev"}`
     - `ClientFeatures` get the value `"envoy.lb.does_not_support_overprovisioning"`
-- After `bootstrap.Config` is ready, `Client.New()` calls `newWithConfig()` to use the `bootstrap.Config` to create a `clientImpl`, which is the real `XdsClient`.
-- It's long enough. Let's discuss `newWithConfig()` in next part.
+  - Now the `config` object is ready, bootstrap file accomplishes its job.
+- `Client.New()` calls `newWithConfig()` to use the `bootstrap.Config` to create a `clientImpl`, which is the real `XdsClient`.
+
+It's long enough. Let's discuss `newWithConfig()` in next part.
 
 ```go
 // This is the Client returned by New(). It contains one client implementation,
@@ -342,7 +371,7 @@ type Client struct {
                        
 // New returns a new xdsClient configured by the bootstrap file specified in env
 // variable GRPC_XDS_BOOTSTRAP.
-func [`New`](#New)() (*Client, error) {                                                   
+func New() (*Client, error) {                                                   
     singletonClient.mu.Lock()
     defer singletonClient.mu.Unlock()
     // If the client implementation was created, increment ref count and return
@@ -440,7 +469,7 @@ func NewConfig() (*Config, error) {
                 return nil, fmt.Errorf("xds: json.Unmarshal(%v) for field %q failed during bootstrap: %v", string(v), k, err)
             }
             if len(servers) < 1 {
-                return nil, fmt.Errorf("xds: bootstrap file parsing failed during bootstrap: file doesn't contain any management server to       connect to")
+                return nil, fmt.Errorf("xds: bootstrap file parsing failed during bootstrap: file doesn't contain any management server to connect to")
             }
             xs := servers[0]
             config.BalancerName = xs.ServerURI
@@ -503,7 +532,7 @@ func NewConfig() (*Config, error) {
         return nil, fmt.Errorf("xds: Required field %q not found in bootstrap %s", "xds_servers.server_uri", jsonData["xds_servers"])
     }
     if config.Creds == nil {
-        return nil, fmt.Errorf("xds: Required field %q doesn't contain valid value in bootstrap %s", "xds_servers.channel_creds", jsonData      ["xds_servers"])
+        return nil, fmt.Errorf("xds: Required field %q doesn't contain valid value in bootstrap %s", "xds_servers.channel_creds", jsonData["xds_servers"])
     }
 
     // We end up using v3 transport protocol version only if the following
@@ -513,6 +542,15 @@ func NewConfig() (*Config, error) {
     // 2. Environment variable "GRPC_XDS_EXPERIMENTAL_V3_SUPPORT" is set to
     //    true.
     // The default value of the enum type "version.TransportAPI" is v2.
+    if env.V3Support && serverSupportsV3 {
+        config.TransportAPI = version.TransportV3
+    }
+
+    if err := config.updateNodeProto(); err != nil {
+        return nil, err
+    }
+    logger.Infof("Bootstrap config for creating xds-client: %+v", config)
+    return config, nil
 }
 
 // updateNodeProto updates the node proto read from the bootstrap file.
@@ -563,21 +601,25 @@ func (c *Config) updateNodeProto() error {
 }
 ```
 
-## Dial to xDS server
+### Dial to xDS server
 
-The goal of `newWithConfig()` is to create the `XdsClient`, which is a gRPC client in nature.
+The goal of `newWithConfig()` is to create the `XdsClient`, which connect with the xDS server.
 
+- `newWithConfig()` checks the `config` fields and prepares the `grpc.DialOption`, and creates the `clientImpl` object `c`.
 - `config.Creds` is used as `grpc.DialOption` to create the TLS connection with the xDS server.
 - `config.BalancerName` is used as target parameter for `grpc.Dial()`, `config.BalancerName` comes from `server_uri`. So `server_uri` is the target xDS server name.
-- After `grpc.Dial()` successfully return the `grpc.*ClientConn`, the connection to xDS server is ready.
-- Then `newAPIClient()` is called to build the v2 or v3 `APIClient` according to the `config.TransportAPI` parameter.
-  - `APIClientBuilder` creates an xDS client for a specific xDS transport protocol. There are two `APIClientBuilder` available: v2 builder and v3 builder.
+- After `grpc.Dial()` successfully returns the `grpc.*ClientConn`, the connection to xDS server is ready. See [Dial process](dial.md) for detail.
+- `newWithConfig()`  calls `newAPIClient()` to build the v2 or v3 `APIClient` according to the `config.TransportAPI` parameter.
+  - `APIClientBuilder` creates an xDS client for a specific xDS transport protocol. There are two registered `APIClientBuilder` available: v2 builder and v3 builder.
+  - `newAPIClient()` calls `getAPIClientBuilder()` to get the API builder `cb`.
   - `getAPIClientBuilder()` uses the `config.TransportAPI` as parameter to determine which `APIClientBuilder` to use.
-  - We will discuss the v3 `APIClientBuilder` in next chapter. TODO
-- After `APIClient` is ready, `c.run()` will be called to start a new goroutine to process the update configuration from xDS server.
+  - `newAPIClient()` calls `cb.Build()` to build the v2 or v3 API client.
+  - We will discuss the v3 `APIClientBuilder` in next chapter.
+- After `APIClient` is ready, `c.run()` will be called to start a goroutine to process the update configuration from xDS server.
   - `c.run()` waits on channel `c.updateCh.Get()` to read the `watcherInfoWithUpdate` message.
-  - if a `watcherInfoWithUpdate` is read, `c.callCallback()` will be called.
-  - We will discuss the `c.callCallback()` later. TODO
+  - We will discuss the `c.callCallback()` later. See [Transform into ServiceConfig](#transform-into-serviceconfig) for detail.
+
+Lets discsuss `APIClientBuilder` in next chapter.
 
 ```go
 // newWithConfig returns a new xdsClient with the given config.
@@ -717,15 +759,19 @@ func (c *clientImpl) run() {
 }
 ```
 
-## `newClient()`
+### v3 API client
 
-Here is the v3 `APIClientBuilder`, its `Build()` method will call `newClient()` to do the job.
+Here is the v3 `APIClientBuilder`. Please note that v3 API is registered by the `init()` function. Once this package is imported by application the v3 API is ready for use.
 
+- `APIClientBuilder.Build()` will call `newClient()`.
 - `newClient()` creates a `v3c` object and uses `v3c` as parameter to call `xdsclient.NewTransportHelper()` to get the `TransportHelper`.
-- `NewTransportHelper()` creates `TransportHelper` object and start a new goroutine `t.run()`.
-  - `TransportHelper.run()` starts an ADS stream. Runs the sender and receiver goroutine to send and receive data from the stream respectively.
-  - `TransportHelper.run()` start a new goroutine `t.send()`, it's the sender goroutine to send data to the stream.
-  - The remaining part of `TransportHelper.run()` is the receiver goroutine to receive data from the stream.
+- `NewTransportHelper()` creates `TransportHelper` object and start a goroutine `t.run()`.
+  - Inside `run()` starts a goroutine `t.send()`
+- `send()` is responsible for sending data to the stream.  See [Communicate with xDS server](#communicate-with-xds-server) for detail.
+- `run()` is responsible for receiving data from the stream.  See [Communicate with xDS server](#communicate-with-xds-server) for detail.
+- Once `TransportHelper` is ready. `newClient()` returns the `v3c`.
+
+In next chapter, We will continue the discussion how to communicate with xDS server.
 
 ```go
 func init() {                                          
@@ -896,12 +942,87 @@ func (t *TransportHelper) send(ctx context.Context) {
         }                                                                                                                                         
     }                                                                                                                                             
 }                                                        
- 
 ```
 
-## Process the update from xDS server
+## Communicate with xDS server
+
+## Transform into ServiceConfig
+
+### Code
+
+<!--
+in case we need it. 
+
+  - `run()` calls `t.vClient.NewStream()` to start an ADS stream `stream`. `t.vClient.NewStream()` is actually v3 `client.NewStream()`.
+    - `client.NewStream()` calls `v3adsgrpc.NewAggregatedDiscoveryServiceClient()` to get the `aggregatedDiscoveryServiceClient`.
+    - Then calls `aggregatedDiscoveryServiceClient.StreamAggregatedResources()` method. In `StreamAggregatedResources()`, `c.cc.NewStream()` will be called to create a bi-direction stream with the xDS server. Then `aggregatedDiscoveryServiceStreamAggregatedResourcesClient` is built with the new stream.
+    - The returned `aggregatedDiscoveryServiceStreamAggregatedResourcesClient` object implements `AggregatedDiscoveryService_StreamAggregatedResourcesClient` interface.
+  - `run()` checks and cleans the `t.streamCh` and send the new `stream` to `t.streamCh`
+  - `run()` calls `t.recv()` and uses the `stream` as parameter.
+-->
 
 ```go
+
+func (v3c *client) NewStream(ctx context.Context) (grpc.ClientStream, error) {
+    return v3adsgrpc.NewAggregatedDiscoveryServiceClient(v3c.cc).StreamAggregatedResources(v3c.ctx, grpc.WaitForReady(true))
+}                                                                                                                                                
+
+// AggregatedDiscoveryServiceClient is the client API for AggregatedDiscoveryService service.                                       
+//                                                                                                                                             
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://godoc.org/google.golang.org/grpc#ClientConn.NewStream.
+type AggregatedDiscoveryServiceClient interface {
+    // This is a gRPC-only API.                                                                                   
+    StreamAggregatedResources(ctx context.Context, opts ...grpc.CallOption) (AggregatedDiscoveryService_StreamAggregatedResourcesClient, error)
+    DeltaAggregatedResources(ctx context.Context, opts ...grpc.CallOption) (AggregatedDiscoveryService_DeltaAggregatedResourcesClient, error)
+}                                                                                                                                   
+                                                                                                                            
+type aggregatedDiscoveryServiceClient struct {                                                          
+    cc grpc.ClientConnInterface                 
+}                                                                                                                 
+                                                                              
+func NewAggregatedDiscoveryServiceClient(cc grpc.ClientConnInterface) AggregatedDiscoveryServiceClient {                    
+    return &aggregatedDiscoveryServiceClient{cc}                                                                                                 
+}
+                                                                                                                                                     
+func (c *aggregatedDiscoveryServiceClient) StreamAggregatedResources(ctx context.Context, opts ...grpc.CallOption) (AggregatedDiscoveryService_StreamAggregatedResourcesClient, error) {                                                                                 
+    stream, err := c.cc.NewStream(ctx, &_AggregatedDiscoveryService_serviceDesc.Streams[0], "/envoy.service.discovery.v3.AggregatedDiscoveryService/StreamAggregatedResources", opts...)                                                                                            
+    if err != nil {                                                                                                                 
+        return nil, err                                                                                                     
+    }                                                                                                                                               
+    x := &aggregatedDiscoveryServiceStreamAggregatedResourcesClient{stream}                                                                        
+    return x, nil                                                                                                 
+}
+func (c *aggregatedDiscoveryServiceClient) DeltaAggregatedResources(ctx context.Context, opts ...grpc.CallOption) (AggregatedDiscoveryService_DeltaAggregatedResourcesClient, error) {                                                                                                                  
+    stream, err := c.cc.NewStream(ctx, &_AggregatedDiscoveryService_serviceDesc.Streams[1], "/envoy.service.discovery.v3.AggregatedDiscoveryService/DeltaAggregatedResources", opts...)                                                                                             
+    if err != nil {                                                                                                                            
+        return nil, err                                                                                                          
+    }                                                                                                         
+    x := &aggregatedDiscoveryServiceDeltaAggregatedResourcesClient{stream}                                                                         
+    return x, nil                                                                                                                   
+}                                                                                                              
+
+type AggregatedDiscoveryService_StreamAggregatedResourcesClient interface {                                                 
+    Send(*DiscoveryRequest) error                                                                             
+    Recv() (*DiscoveryResponse, error)                                                                                     
+    grpc.ClientStream                                                                                                                           
+}
+                                                                                                              
+type aggregatedDiscoveryServiceStreamAggregatedResourcesClient struct {                                       
+    grpc.ClientStream                                                                                                       
+}
+                                                                                                                             
+func (x *aggregatedDiscoveryServiceStreamAggregatedResourcesClient) Send(m *DiscoveryRequest) error {         
+    return x.ClientStream.SendMsg(m)                                                                                        
+}                                                                                                             
+                                                                                                              
+func (x *aggregatedDiscoveryServiceStreamAggregatedResourcesClient) Recv() (*DiscoveryResponse, error) {                    
+    m := new(DiscoveryResponse)                                                                               
+    if err := x.ClientStream.RecvMsg(m); err != nil {
+        return nil, err
+    }
+    return m, nil
+}
+
 func (c *clientImpl) callCallback(wiu *watcherInfoWithUpdate) {
     c.mu.Lock()
     // Use a closure to capture the callback and type assertion, to save one
