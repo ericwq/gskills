@@ -13,9 +13,11 @@
   - [Prepare ADS stream](#prepare-ads-stream)
   - [Send LDS request](#send-lds-request)
   - [Get resource response](#get-resource-response)
-  - [Handle resource response](#handle-resource-response)
+  - [Handle LDS response](#handle-lds-response)
 - [Transform into ServiceConfig](#transform-into-serviceconfig)
-  - [Handle LDS update](#handle-lds-update)
+  - [LDS callback](#lds-callback)
+  - [Send RDS request](#send-rds-request)
+  - [Handle RDS response](#handle-rds-response)
 
 The gRPC team believe that Envoy proxy (actually, any data plane) is not the only solution for service mesh. By support xDS protocol gRPC can take the role of Envoy proxy. In general gRPC wants to build a proxy-less service mesh without data plane.  See [xDS Support in gRPC - Mark D. Roth](https://www.youtube.com/watch?v=IbcJ8kNmsrE) and [Traffic Director and gRPC—proxyless services for your service mesh](https://cloud.google.com/blog/products/networking/traffic-director-supports-proxyless-grpc).
 
@@ -1022,7 +1024,7 @@ func (c *clientImpl) WatchListener(serviceName string, cb func(ListenerUpdate, e
         ldsCallback: cb,
     }
 
-    wi.expiryTimer = time.AfterFunc(c.watchExpiryTimeout, func() {
+    wi.expiryTimer = ti<F6>me.AfterFunc(c.watchExpiryTimeout, func() {
         wi.timeout()
     })
     return c.watch(wi)
@@ -1277,7 +1279,7 @@ func mapToSlice(m map[string]bool) (ret []string) {
 func (t *TransportHelper) processAckInfo(ack *ackAction, stream grpc.ClientStream) (target []string, rType ResourceType, version, nonce string, send bool) {
     if ack.stream != stream {
         // If ACK's stream isn't the current sending stream, this means the ACK
-        // was pushed to queue before the old stream broke, and a new stream has
+        // was push<F6>ed to queue before the old stream broke, and a new stream has
         // been started since. Return immediately here so we don't update the
         // nonce for the new stream.
         return nil, UnknownResource, "", "", false
@@ -1495,11 +1497,11 @@ func (v3c *client) HandleResponse(r proto.Message) (xdsclient.ResourceType, stri
 }
 ```
 
-### Handle resource response
+### Handle LDS response
 
 - `handleLDSResponse()` calls `xdsclient.UnmarshalListener()`.
-  - `UnmarshalListener()` calls `proto.Unmarshal()` to unmarshal the resource response.
-  - `UnmarshalListener()` calls `processListener()` to extract the supported fields from the responded `Listener` proto.
+  - `UnmarshalListener()` calls `proto.Unmarshal()` to unmarshal the `DiscoveryResponse` proto.
+  - `UnmarshalListener()` calls `processListener()` to extract the supported fields from the `Listener` object.
     - `processListener()` calls `processClientSideListener()` or `processServerSideListener()` to check the `Listener` proto.
     - `processClientSideListener()` checks the `Listener` proto to makes sure it meet the following criteria.
     - The `api_listener` field is [config.listener.v3.Listener](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/listener/v3/listener.proto#config-listener-v3-listener) is valid.
@@ -1515,11 +1517,11 @@ func (v3c *client) HandleResponse(r proto.Message) (xdsclient.ResourceType, stri
     - `processListener()` calls either `processClientSideListener()` or `processServerSideListener()`, not both. The reason is not clear.
 - `handleLDSResponse()` calls `v3c.parent.NewListeners()`, which is actually `clientImpl.NewListeners()`.
   - For every `ListenerUpdate`, `NewListeners()` checks if it exists in `c.ldsWatchers`, if it does exist, calls `wi.newUpdate()` and add it to `c.ldsCache`.
-    - `wi.newUpdate()` updates the `wi.state`, stops the `wi.expiryTimer.Stop` and calls `wi.c.scheduleCallback()`.
+    - `wi.newUpdate()` updates the `wi.state`, stops the `wi.expiryTimer` and calls `wi.c.scheduleCallback()`.
   - If resource exists in cache, but not in the new update, delete it from cache and call `wi.resourceNotFound()`.
     - `wi.resourceNotFound()` updates the `wi.state`, stops the `wi.expiryTimer.Stop` and calls `wi.sendErrorLocked()`.
     - `wi.sendErrorLocked()` clears the `update` object and calls `wi.c.scheduleCallback()`.
-  - `scheduleCallback()` sends `watcherInfoWithUpdate` message to channel `c.updateCh.Put`.
+  - `scheduleCallback()` sends `watcherInfoWithUpdate` message to channel `c.updateCh`.
 
 Now the `watcherInfoWithUpdate` has been sent to channel `c.updateCh`. Let's discuss the receiving part in next chapter.
 
@@ -1771,16 +1773,17 @@ You may think that only half of the xDS job is down in previous chapter. That's 
 - Blue bar and arrow represents the channel communication for `t.sendCh`.
 - Grey bar and arrow represents the channel communication for `r.updateCh`.
 - Pink bar and arrow represents the channel communication for `c.upateCh`.
+- Dot arrow represents there exist indirect relationship between two box.
 
 ![xDS protocol: 3](../images/images.011.png)
 
 In this stage, we will accomplish the following job:
 
-- A
+- Process LDS response and issue RDS reqeust.
 - B
 - C
 
-### Handle LDS update
+### LDS callback
 
 `clientImpl.run()` waits on channel `c.updateCh.Get()`. Once `scheduleCallback()` sends the `watcherInfoWithUpdate`, `clientImpl.run()` gets the work.
 
@@ -1799,19 +1802,21 @@ In this stage, we will accomplish the following job:
   - `handleServiceUpdate()` sends `w.lastUpdate` to channel `r.updateCh`.
 - If the new `RouteConfigName` is different from the previous value, `w.handleLDSResp()` calls `w.c.WatchRouteConfig()` and set `w.rdsCancel`.
   - `w.c.WatchRouteConfig()` is actually `clientImpl.WatchRouteConfig()`.
-  - `WatchRouteConfig()` builds a watchInfo object, note that:
+  - `WatchRouteConfig()` builds a `watchInfo` object, note that:
     - The value of `rdsCallback` field is `serviceUpdateWatcher.handleRDSResp()`.
     - The value of `wi.rType` field is `RouteConfigResource`.
     - The value of `wi.target` field is `RouteConfigName`.
   - Finally `WatchRouteConfig()` calls `c.watch()`, which is actually `clientImpl.watch()`.
-    - `watch()` adds `*watchInfo` to `c.rdsWatchers`. This is the new watcher. `c.apiClient.AddWatch` will be called.
+    - `watch()` adds `*watchInfo` to `c.rdsWatchers`. Since is the new watcher, `c.apiClient.AddWatch` will be called.
+    - After the invocation of `watch()`, `c.rdsWatchers` got a new `watchInfo` record under the `wi.target` name.
     - Calls `c.apiClient.AddWatch()`, which actually calls `TransportHelper.AddWatch()`.
+    - `AddWatch()` simply sends a `watchAction` to unbounded buffer `t.sendCh`.
     - Since the resource is not in cache, `watch()` skips the remain part to return.
 - After the return of `WatchRouteConfig()`, `w.rdsCancel` is set.
 
-After the invocation of `watch()`, `c.rdsWatchers` got a new `watchInfo` record under the `wi.target` name. Next, we will discuss the processing of this `watchInfo`.
+After the invocation of `handleServiceUpdate()`, a `w.lastUpdate` was sent to channel `r.updateCh`. `w.lastUpdate` is a `serviceUpdate`. In our case, only `sesrviceUpdate.ldsConfig` field is modified.
 
-After the invocation of `handleServiceUpdate()`, a `w.lastUpdate` was sent to channel `r.updateCh`. `w.lastUpdate` is a `serviceUpdate`. In our case, only `sesrviceUpdate.ldsConfig` field is changed.
+Next, we will discuss the processing of the RDS `watchAction`.
 
 ```go
 // run is a goroutine for all the callbacks.
@@ -2009,5 +2014,313 @@ func (r *xdsResolver) handleServiceUpdate(su serviceUpdate, err error) {
     }
     r.updateCh <- suWithError{su: su, err: err}
 }
-
 ```
+
+### Send RDS request
+
+In previous Chapter, `AddWatch()` send a RDS `watchAction` to channel `t.sendCh`. From [Send LDS request](#send-lds-request), we know the following process will happen:
+
+- `send()` gets the `watchAction` from channel `t.sendCh.Get()`.
+- `send()` calls `t.processWatchInfo()` for this `watchAction`.
+  - `processWatchInfo()` updates `t.watchMap` and prepares parameters for xDS request.
+- `send()` calls v3 `client.SendRequest()` to send the `DiscoveryRequest` message to the xDS server.  
+
+### Handle RDS response
+
+From [Get resource response](#get-resource-response), we know the following process will happen:
+
+- `recv()` calls v3 `client.RecvResponse()` to read the `DiscoveryResponse` proto.
+- `recv()` calls v3 `client.HandleResponse()` to call the `v3c.handleRDSResponse()` according to `resp.GetTypeUrl`.
+- `handleRDSResponse()` calls `xdsclient.UnmarshalRouteConfig()`.
+  - `UnmarshalRouteConfig()` calls `proto.Unmarshal()` to unmarshal the `RouteConfiguration` proto.
+  - `UnmarshalRouteConfig()` calls `generateRDSUpdateFromRouteConfiguration()` to extract the supported fields from the `RouteConfiguration` object. In the following description, we will briefly call `generate()` to replace the long `generateRDSUpdateFromRouteConfiguration()`.
+    - `generate()` checks if the provided `RouteConfiguration` meets the expected criteria.
+    - [RouteConfiguration](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/route/v3/route.proto) has repeated [VirtualHost](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/route/v3/route_components.proto#envoy-v3-api-msg-config-route-v3-virtualhost).
+    - For every `VirtualHost` we are only interested the `domains` field and `routes` field. `routes` field contains repeated [Route](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/route/v3/route_components.proto#envoy-v3-api-msg-config-route-v3-route).
+    - For every `Routes`, `generate()` calls `routesProtoToSlice()` to validate the `Routes`.
+    - `routesProtoToSlice()` checks `Routes` meets the expected criteria.
+    - `Route` contains `match` field, which is `RouteMatch`, and [RouteMatch](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/route/v3/route_components.proto#envoy-v3-api-msg-config-route-v3-routematch) does not contain `query_parameters` field.
+    - `RouteMatch` does contains `path_specifier` field. `RouteMatch` contains one of `prefix` field, `path` field or `safe_regex` field. The field is copied to `route`
+    - `RouteMatch`'s `case_sensitive` field is copied to `route`.
+    - For the `headers` field in `RouteMatch`, which is `HeaderMatcher`, all field is copied `route.Headers` except the `contains_match` field.
+    - If the `runtime_fraction` field in `RouteMatch` exists, the `default_value` field is calculated and the `route.Fraction` is set base on it. See [RuntimeFractionalPercent](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/core/v3/base.proto#envoy-v3-api-msg-config-core-v3-runtimefractionalpercent) for detail.
+    - For the `route` field - [RouteAction](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/route/v3/route_components.proto#envoy-v3-api-msg-config-route-v3-routeaction) - in `Route`, only `cluster` or `weighted_clusters` is supported. `route.Action` get the value from them.
+    - The return value of `generateRDSUpdateFromRouteConfiguration()` is `RouteConfigUpdate`, which only contains `VirtualHosts` field.
+    - `route.MaxStreamDuration` get value from either `grpc_timeout_header_max` field or `max_stream_duration` field in [MaxStreamDuration](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/route/v3/route_components.proto#envoy-v3-api-msg-config-route-v3-routeaction-maxstreamduration), the former has high priority.  
+    - `MaxStreamDuration` is the `max_stream_duration` field of `RouteAction`.
+    - The above description is tedious and error-prone, a easy way is to refer to the `Route` struct in the following code.
+- `handleRDSResponse()` calls `v3c.parent.NewRouteConfigs()`, which is actually `clientImpl.NewRouteConfigs()`.
+
+It's long enough, let's discuss `NewRouteConfigs()` in next section.
+
+```go
+// handleRDSResponse processes an RDS response received from the management
+// server. On receipt of a good response, it caches validated resources and also
+// invokes the registered watcher callback.
+func (v3c *client) handleRDSResponse(resp *v3discoverypb.DiscoveryResponse) error {
+    update, err := xdsclient.UnmarshalRouteConfig(resp.GetResources(), v3c.logger)
+    if err != nil {
+        return err
+    }
+    v3c.parent.NewRouteConfigs(update)
+    return nil
+}
+
+// UnmarshalRouteConfig processes resources received in an RDS response,
+// validates them, and transforms them into a native struct which contains only
+// fields we are interested in. The provided hostname determines the route
+// configuration resources of interest.
+func UnmarshalRouteConfig(resources []*anypb.Any, logger *grpclog.PrefixLogger) (map[string]RouteConfigUpdate, error) {
+    update := make(map[string]RouteConfigUpdate)
+    for _, r := range resources {
+        if !IsRouteConfigResource(r.GetTypeUrl()) {
+            return nil, fmt.Errorf("xds: unexpected resource type: %q in RDS response", r.GetTypeUrl())
+        }
+        rc := &v3routepb.RouteConfiguration{}
+        if err := proto.Unmarshal(r.GetValue(), rc); err != nil {
+            return nil, fmt.Errorf("xds: failed to unmarshal resource in RDS response: %v", err)
+        }
+        logger.Infof("Resource with name: %v, type: %T, contains: %v.", rc.GetName(), rc, rc)
+
+        // Use the hostname (resourceName for LDS) to find the routes.
+        u, err := generateRDSUpdateFromRouteConfiguration(rc, logger)
+        if err != nil {
+            return nil, fmt.Errorf("xds: received invalid RouteConfiguration in RDS response: %+v with err: %v", rc, err)
+        }
+        update[rc.GetName()] = u
+    }
+    return update, nil
+}
+
+// generateRDSUpdateFromRouteConfiguration checks if the provided
+// RouteConfiguration meets the expected criteria. If so, it returns a
+// RouteConfigUpdate with nil error.
+//
+// A RouteConfiguration resource is considered valid when only if it contains a
+// VirtualHost whose domain field matches the server name from the URI passed
+// to the gRPC channel, and it contains a clusterName or a weighted cluster.
+//
+// The RouteConfiguration includes a list of VirtualHosts, which may have zero
+// or more elements. We are interested in the element whose domains field
+// matches the server name specified in the "xds:" URI. The only field in the
+// VirtualHost proto that the we are interested in is the list of routes. We
+// only look at the last route in the list (the default route), whose match
+// field must be empty and whose route field must be set.  Inside that route
+// message, the cluster field will contain the clusterName or weighted clusters
+// we are looking for.
+func generateRDSUpdateFromRouteConfiguration(rc *v3routepb.RouteConfiguration, logger *grpclog.PrefixLogger) (RouteConfigUpdate, error) {
+    var vhs []*VirtualHost
+    for _, vh := range rc.GetVirtualHosts() {
+        routes, err := routesProtoToSlice(vh.Routes, logger)
+        if err != nil {
+            return RouteConfigUpdate{}, fmt.Errorf("received route is invalid: %v", err)
+        }
+        vhs = append(vhs, &VirtualHost{
+            Domains: vh.GetDomains(),
+            Routes:  routes,
+        })
+    }
+    return RouteConfigUpdate{VirtualHosts: vhs}, nil
+}
+
+func routesprototoslice(routes []*v3routepb.route, logger *grpclog.prefixlogger) ([]*route, error) {
+    var routesret []*route
+
+    for _, r := range routes {
+        match := r.getmatch()
+        if match == nil {
+            return nil, fmt.errorf("route %+v doesn't have a match", r)
+        }
+
+        if len(match.getqueryparameters()) != 0 {
+            // ignore route with query parameters.
+            logger.warningf("route %+v has query parameter matchers, the route will be ignored", r)
+            continue
+        }
+
+        pathsp := match.getpathspecifier()
+        if pathsp == nil {
+            return nil, fmt.errorf("route %+v doesn't have a path specifier", r)
+        }
+
+        var route route
+        switch pt := pathSp.(type) {
+        case *v3routepb.RouteMatch_Prefix:
+            route.Prefix = &pt.Prefix
+        case *v3routepb.RouteMatch_Path:
+            route.Path = &pt.Path
+        case *v3routepb.RouteMatch_SafeRegex:
+            route.Regex = &pt.SafeRegex.Regex
+        default:
+            return nil, fmt.Errorf("route %+v has an unrecognized path specifier: %+v", r, pt)
+        }
+
+        if caseSensitive := match.GetCaseSensitive(); caseSensitive != nil {
+            route.CaseInsensitive = !caseSensitive.Value
+        }
+
+        for _, h := range match.GetHeaders() {
+            var header HeaderMatcher
+            switch ht := h.GetHeaderMatchSpecifier().(type) {
+            case *v3routepb.HeaderMatcher_ExactMatch:
+                header.ExactMatch = &ht.ExactMatch
+            case *v3routepb.HeaderMatcher_SafeRegexMatch:
+                header.RegexMatch = &ht.SafeRegexMatch.Regex
+            case *v3routepb.HeaderMatcher_RangeMatch:
+                header.RangeMatch = &Int64Range{
+                    Start: ht.RangeMatch.Start,
+                    End:   ht.RangeMatch.End,
+                }
+            case *v3routepb.HeaderMatcher_PresentMatch:
+                header.PresentMatch = &ht.PresentMatch
+            case *v3routepb.HeaderMatcher_PrefixMatch:
+                header.PrefixMatch = &ht.PrefixMatch
+            case *v3routepb.HeaderMatcher_SuffixMatch:
+                header.SuffixMatch = &ht.SuffixMatch
+            default:
+                return nil, fmt.Errorf("route %+v has an unrecognized header matcher: %+v", r, ht)
+            }
+            header.Name = h.GetName()
+            invert := h.GetInvertMatch()
+            header.InvertMatch = &invert
+            route.Headers = append(route.Headers, &header)
+        }
+
+        if fr := match.GetRuntimeFraction(); fr != nil {
+            d := fr.GetDefaultValue()
+            n := d.GetNumerator()
+            switch d.GetDenominator() {
+            case v3typepb.FractionalPercent_HUNDRED:
+                n *= 10000
+            case v3typepb.FractionalPercent_TEN_THOUSAND:
+                n *= 100
+            case v3typepb.FractionalPercent_MILLION:
+            }
+            route.Fraction = &n
+        }
+
+        clusters := make(map[string]uint32)
+        action := r.GetRoute()
+        switch a := action.GetClusterSpecifier().(type) {
+        switch a := action.GetClusterSpecifier().(type) {
+        case *v3routepb.RouteAction_Cluster:
+            clusters[a.Cluster] = 1
+        case *v3routepb.RouteAction_WeightedClusters:
+            wcs := a.WeightedClusters
+            var totalWeight uint32
+            for _, c := range wcs.Clusters {
+                w := c.GetWeight().GetValue()
+                if w == 0 {
+                    continue
+                }
+                clusters[c.GetName()] = w
+                totalWeight += w
+            }
+            if totalWeight != wcs.GetTotalWeight().GetValue() {
+                return nil, fmt.Errorf("route %+v, action %+v, weights of clusters do not add up to total total weight, got: %v, want %v", r, a, wcs.GetTotalWeight().GetValue(), totalWeight)
+            }
+            if totalWeight == 0 {
+                return nil, fmt.Errorf("route %+v, action %+v, has no valid cluster in WeightedCluster action", r, a)
+            }
+        case *v3routepb.RouteAction_ClusterHeader:
+            continue
+        }
+
+        route.Action = clusters
+
+        msd := action.GetMaxStreamDuration()
+        // Prefer grpc_timeout_header_max, if set.
+        dur := msd.GetGrpcTimeoutHeaderMax()
+        if dur == nil {
+            dur = msd.GetMaxStreamDuration()
+        }
+        if dur != nil {
+            d := dur.AsDuration()
+            route.MaxStreamDuration = &d
+        }
+        routesRet = append(routesRet, &route)
+    }
+    return routesRet, nil
+}
+
+// VirtualHost contains the routes for a list of Domains.
+//
+// Note that the domains in this slice can be a wildcard, not an exact string.
+// The consumer of this struct needs to find the best match for its hostname.
+type VirtualHost struct {
+    Domains []string
+    // Routes contains a list of routes, each containing matchers and
+    // corresponding action.
+    Routes []*Route
+}
+
+// Route is both a specification of how to match a request as well as an
+// indication of the action to take upon match.
+type Route struct {
+    Path, Prefix, Regex *string
+    // Indicates if prefix/path matching should be case insensitive. The default
+    // is false (case sensitive).
+    CaseInsensitive bool
+    Headers         []*HeaderMatcher
+    Fraction        *uint32
+
+    // If the matchers above indicate a match, the below configuration is used.
+    Action map[string]uint32 // action is weighted clusters.
+    // If MaxStreamDuration is nil, it indicates neither of the route action's
+    // max_stream_duration fields (grpc_timeout_header_max nor
+    // max_stream_duration) were set.  In this case, the ListenerUpdate's
+    // MaxStreamDuration field should be used.  If MaxStreamDuration is set to
+    // an explicit zero duration, the application's deadline should be used.
+    MaxStreamDuration *time.Duration
+}
+
+// HeaderMatcher represents header matchers.
+type HeaderMatcher struct {
+    Name         string      `json:"name"`
+    InvertMatch  *bool       `json:"invertMatch,omitempty"`
+    ExactMatch   *string     `json:"exactMatch,omitempty"`
+    RegexMatch   *string     `json:"regexMatch,omitempty"`
+    PrefixMatch  *string     `json:"prefixMatch,omitempty"`
+    SuffixMatch  *string     `json:"suffixMatch,omitempty"`
+    RangeMatch   *Int64Range `json:"rangeMatch,omitempty"`
+    PresentMatch *bool       `json:"presentMatch,omitempty"`
+}
+
+// Int64Range is a range for header range match.
+type Int64Range struct {
+    Start int64 `json:"start"`
+    End   int64 `json:"end"`
+}
+```
+
+In `NewRouteConfigs()`:
+
+- For every `RouteConfigUpdate`, `NewRouteConfigs()` checks if it exists in `c.rdsWatchers`,
+- If it does exist, calls `wi.newUpdate` and add it to `c.rdsCache`.
+  - `wi.newUpdate()` updates the `wi.state`, stops the `wi.expiryTimer` and calls `wi.c.scheduleCallback()`.
+  - `scheduleCallback()` sends `watcherInfoWithUpdate` message to channel `c.updateCh`.
+
+```go
+// NewRouteConfigs is called by the underlying xdsAPIClient when it receives an
+// xDS response.
+//
+// A response can contain multiple resources. They will be parsed and put in a
+// map from resource name to the resource content.
+func (c *clientImpl) NewRouteConfigs(updates map[string]RouteConfigUpdate) {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+
+    for name, update := range updates {
+        if s, ok := c.rdsWatchers[name]; ok {
+            for wi := range s {
+                wi.newUpdate(update)
+            }
+            // Sync cache.
+            c.logger.Debugf("RDS resource with name %v, value %+v added to cache", name, update)
+            c.rdsCache[name] = update
+        }
+    }
+}
+```
+
+### RDS callback
