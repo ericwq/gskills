@@ -15,6 +15,7 @@
   - [Get resource response](#get-resource-response)
   - [Handle resource response](#handle-resource-response)
 - [Transform into ServiceConfig](#transform-into-serviceconfig)
+  - [Handle LDS update](#handle-lds-update)
 
 The gRPC team believe that Envoy proxy (actually, any data plane) is not the only solution for service mesh. By support xDS protocol gRPC can take the role of Envoy proxy. In general gRPC wants to build a proxy-less service mesh without data plane.  See [xDS Support in gRPC - Mark D. Roth](https://www.youtube.com/watch?v=IbcJ8kNmsrE) and [Traffic Director and gRPC—proxyless services for your service mesh](https://cloud.google.com/blog/products/networking/traffic-director-supports-proxyless-grpc).
 
@@ -120,10 +121,10 @@ Example YAML:
 
 In this stage, we will utilizes bootstrap file to create the connection with xDS server. Here is another map for this stage.  In this map:
 
-- yellow box represents the important type and method/function.
-- green box represents a function run in a dedicated goroutine.
-- arrow represents the call direction and order.
-- red dot means there is another map to be continue for that box.
+- Yellow box represents the important type and method/function.
+- Green box represents a function run in a dedicated goroutine.
+- Arrow represents the call direction and order.
+- Red dot means there is another map to be continue for that box.
 
 ![xDS protocol: 1](../images/images.009.png)
 
@@ -952,7 +953,7 @@ func (t *TransportHelper) send(ctx context.Context) {
 
 Now the connection with xDS server is ready. Let's discuss how gRPC communicates with the xDS server via ADS v3 API. Here is another map for this stage. In this map:
 
-- yellow box represents the important type and method/function.
+- Yellow box represents the important type and method/function.
 - Green box represents a function run in a dedicated goroutine.
 - Arrow represents the call direction and order.
 - Red dot means there is another map to be continue for that box.
@@ -1763,7 +1764,7 @@ func (wi *watchInfo) sendErrorLocked(err error) {
 
 You may think that only half of the xDS job is down in previous chapter. That's right. `clientImpl.run()` will finish the other half of the xDS job. Although `clientImpl.run()` goroutine increase complexity to understand the xDS module. Without this goroutine, the callback will be called inline, which might cause a deadlock in user's code. Here is another map for this stage. In this map:
 
-- yellow box represents the important type and method/function.
+- Yellow box represents the important type and method/function.
 - Green box represents a function run in a dedicated goroutine.
 - Arrow represents the call direction and order.
 - Red dot means the box is a continue part form other map.
@@ -1779,7 +1780,7 @@ In this stage, we will accomplish the following job:
 - B
 - C
 
-### Need to change
+### Handle LDS update
 
 `clientImpl.run()` waits on channel `c.updateCh.Get()`. Once `scheduleCallback()` sends the `watcherInfoWithUpdate`, `clientImpl.run()` gets the work.
 
@@ -1793,7 +1794,24 @@ In this stage, we will accomplish the following job:
   - `ldsCallback` is set by `WatchListener()`, it's `w.handleLDSResp()`.
   - `rdsCallback` is set by `WatchRouteConfig()`, it's `w.handleRDSResp()`.
   - `serviceUpdateWatcher.serviceCb` is set by `watchService()`, it's  `r.handleServiceUpdate`.
-- `w.handleLDSResp()` TODO 
+- `w.handleLDSResp()` updates `w.lastUpdate.ldsConfig`, which means update the `maxStreamDuration` to the new value `update.MaxStreamDuration`.
+- `w.handleLDSResp()` checks if the new `RouteConfigName` is same as the previous. If it does not change and `w.lastUpdate.ldsConfig` does change, calls `w.serviceCb`, which is actually `r.handleServiceUpdate`.
+  - `handleServiceUpdate()` sends `w.lastUpdate` to channel `r.updateCh`.
+- If the new `RouteConfigName` is different from the previous value, `w.handleLDSResp()` calls `w.c.WatchRouteConfig()` and set `w.rdsCancel`.
+  - `w.c.WatchRouteConfig()` is actually `clientImpl.WatchRouteConfig()`.
+  - `WatchRouteConfig()` builds a watchInfo object, note that:
+    - The value of `rdsCallback` field is `serviceUpdateWatcher.handleRDSResp()`.
+    - The value of `wi.rType` field is `RouteConfigResource`.
+    - The value of `wi.target` field is `RouteConfigName`.
+  - Finally `WatchRouteConfig()` calls `c.watch()`, which is actually `clientImpl.watch()`.
+    - `watch()` adds `*watchInfo` to `c.rdsWatchers`. This is the new watcher. `c.apiClient.AddWatch` will be called.
+    - Calls `c.apiClient.AddWatch()`, which actually calls `TransportHelper.AddWatch()`.
+    - Since the resource is not in cache, `watch()` skips the remain part to return.
+- After the return of `WatchRouteConfig()`, `w.rdsCancel` is set.
+
+After the invocation of `watch()`, `c.rdsWatchers` got a new `watchInfo` record under the `wi.target` name. Next, we will discuss the processing of this `watchInfo`.
+
+After the invocation of `handleServiceUpdate()`, a `w.lastUpdate` was sent to channel `r.updateCh`. `w.lastUpdate` is a `serviceUpdate`. In our case, only `sesrviceUpdate.ldsConfig` field is changed.
 
 ```go
 // run is a goroutine for all the callbacks.
