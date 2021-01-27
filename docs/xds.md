@@ -15,9 +15,10 @@
   - [Get resource response](#get-resource-response)
   - [Handle LDS response](#handle-lds-response)
 - [Transform into ServiceConfig](#transform-into-serviceconfig)
-  - [LDS callback](#lds-callback)
+  - [xDS callback](#xds-callback)
   - [Send RDS request](#send-rds-request)
   - [Handle RDS response](#handle-rds-response)
+  - [RDS callback](#rds-callback)
 
 The gRPC team believe that Envoy proxy (actually, any data plane) is not the only solution for service mesh. By support xDS protocol gRPC can take the role of Envoy proxy. In general gRPC wants to build a proxy-less service mesh without data plane.  See [xDS Support in gRPC - Mark D. Roth](https://www.youtube.com/watch?v=IbcJ8kNmsrE) and [Traffic Director and gRPC—proxyless services for your service mesh](https://cloud.google.com/blog/products/networking/traffic-director-supports-proxyless-grpc).
 
@@ -1773,17 +1774,17 @@ You may think that only half of the xDS job is down in previous chapter. That's 
 - Blue bar and arrow represents the channel communication for `t.sendCh`.
 - Grey bar and arrow represents the channel communication for `r.updateCh`.
 - Pink bar and arrow represents the channel communication for `c.upateCh`.
-- Dot arrow represents there exist indirect relationship between two box.
+- Dot arrow represents the indirect relationship between two boxes.
 
 ![xDS protocol: 3](../images/images.011.png)
 
 In this stage, we will accomplish the following job:
 
-- Process LDS response and issue RDS reqeust.
-- B
-- C
+- Process LDS response and issue RDS request.
+- Extract the `Routes` from the RDS response.
+- Send the `Routes` to xDS resolver.
 
-### LDS callback
+### xDS callback
 
 `clientImpl.run()` waits on channel `c.updateCh.Get()`. Once `scheduleCallback()` sends the `watcherInfoWithUpdate`, `clientImpl.run()` gets the work.
 
@@ -2033,7 +2034,7 @@ From [Get resource response](#get-resource-response), we know the following proc
 - `recv()` calls v3 `client.HandleResponse()` to call the `v3c.handleRDSResponse()` according to `resp.GetTypeUrl`.
 - `handleRDSResponse()` calls `xdsclient.UnmarshalRouteConfig()`.
   - `UnmarshalRouteConfig()` calls `proto.Unmarshal()` to unmarshal the `RouteConfiguration` proto.
-  - `UnmarshalRouteConfig()` calls `generateRDSUpdateFromRouteConfiguration()` to extract the supported fields from the `RouteConfiguration` object. In the following description, we will briefly call `generate()` to replace the long `generateRDSUpdateFromRouteConfiguration()`.
+  - `UnmarshalRouteConfig()` calls `generateRDSUpdateFromRouteConfiguration()` to extract the supported fields from the `RouteConfiguration` object. ( In the following description, `generate()` will be used to replace the long `generateRDSUpdateFromRouteConfiguration()`)
     - `generate()` checks if the provided `RouteConfiguration` meets the expected criteria.
     - [RouteConfiguration](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/route/v3/route.proto) has repeated [VirtualHost](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/route/v3/route_components.proto#envoy-v3-api-msg-config-route-v3-virtualhost).
     - For every `VirtualHost` we are only interested the `domains` field and `routes` field. `routes` field contains repeated [Route](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/route/v3/route_components.proto#envoy-v3-api-msg-config-route-v3-route).
@@ -2296,7 +2297,7 @@ type Int64Range struct {
 In `NewRouteConfigs()`:
 
 - For every `RouteConfigUpdate`, `NewRouteConfigs()` checks if it exists in `c.rdsWatchers`,
-- If it does exist, calls `wi.newUpdate` and add it to `c.rdsCache`.
+- If it does exist, (in our case, yes) calls `wi.newUpdate` and add it to `c.rdsCache`.
   - `wi.newUpdate()` updates the `wi.state`, stops the `wi.expiryTimer` and calls `wi.c.scheduleCallback()`.
   - `scheduleCallback()` sends `watcherInfoWithUpdate` message to channel `c.updateCh`.
 
@@ -2324,3 +2325,133 @@ func (c *clientImpl) NewRouteConfigs(updates map[string]RouteConfigUpdate) {
 ```
 
 ### RDS callback
+
+Now we got a message in channel `c.updateCh`, It's time to consume it. From [xDS callback](#xds-callback), we know the following process will happen:
+
+- `clientImpl.run()` calls `c.callCallback()` with the incoming `watcherInfoWithUpdate` as parameter.
+- In our case, the message's `wi.rType` field is `RouteConfigResource`. `callCallback()` will call `rdsCallback()`, which actually calls `w.handleRDSResp()`.
+- `handleRDSResp()` calls `findBestMatchingVirtualHost()` to find the matched `VirtualHost`.
+  - `findBestMatchingVirtualHost()` returns the best matching `VirtualHost`.
+- `handleRDSResp()` set the `w.lastUpdate.routes` to `matchVh`.
+- `handleRDSResp()` calls `w.serviceCb()`, which actually calls `xdsResolver.handleServiceUpdate()`.
+  - `handleServiceUpdate()` sends `w.lastUpdate` to channel `r.updateCh`.
+  - `w.serviceCb` is `xdsResolver.handleServiceUpdate()`, `w.serviceCb` is set when `serviceUpdateWatcher` object is created.
+
+Through the above processing, `watcherInfoWithUpdate` message is converted into `serviceUpdate` message.
+
+```go
+func (w *serviceUpdateWatcher) handleRDSResp(update xdsclient.RouteConfigUpdate, err error) {
+    w.logger.Infof("received RDS update: %+v, err: %v", update, err)
+    w.mu.Lock()
+    defer w.mu.Unlock()
+    if w.closed {
+        return
+    }
+    if w.rdsCancel == nil {
+        // This mean only the RDS watch is canceled, can happen if the LDS
+        // resource is removed.
+        return
+    }
+    if err != nil {
+        w.serviceCb(serviceUpdate{}, err)
+        return
+    }
+
+    matchVh := findBestMatchingVirtualHost(w.serviceName, update.VirtualHosts)
+    if matchVh == nil {
+        // No matching virtual host found.
+        w.serviceCb(serviceUpdate{}, fmt.Errorf("no matching virtual host found for %q", w.serviceName))
+        return
+    }
+
+    w.lastUpdate.routes = matchVh.Routes
+    w.serviceCb(w.lastUpdate, nil)
+}
+
+// findBestMatchingVirtualHost returns the virtual host whose domains field best
+// matches host
+//
+// The domains field support 4 different matching pattern types:
+//  - Exact match
+//  - Suffix match (e.g. “*ABC”)
+//  - Prefix match (e.g. “ABC*)
+//  - Universal match (e.g. “*”)
+//
+// The best match is defined as:
+//  - A match is better if it’s matching pattern type is better
+//    - Exact match > suffix match > prefix match > universal match
+//  - If two matches are of the same pattern type, the longer match is better
+//    - This is to compare the length of the matching pattern, e.g. “*ABCDE” >
+//    “*ABC”
+func findBestMatchingVirtualHost(host string, vHosts []*xdsclient.VirtualHost) *xdsclient.VirtualHost {
+    var (
+        matchVh   *xdsclient.VirtualHost
+        matchType = domainMatchTypeInvalid
+        matchLen  int
+    )
+    for _, vh := range vHosts {
+        for _, domain := range vh.Domains {
+            typ, matched := match(domain, host)
+            if typ == domainMatchTypeInvalid {
+                // The rds response is invalid.
+                return nil
+            }
+            if matchType.betterThan(typ) || matchType == typ && matchLen >= len(domain) || !matched {
+                // The previous match has better type, or the previous match has
+                // better length, or this domain isn't a match.
+                continue
+            }
+            matchVh = vh
+            matchType = typ
+            matchLen = len(domain)
+        }
+    }
+    return matchVh
+}
+
+// Exact > Suffix > Prefix > Universal > Invalid.
+func (t domainMatchType) betterThan(b domainMatchType) bool {
+    return t > b
+}
+
+func matchTypeForDomain(d string) domainMatchType {
+    if d == "" {
+        return domainMatchTypeInvalid
+    }
+    if d == "*" {
+        return domainMatchTypeUniversal
+    }
+    if strings.HasPrefix(d, "*") {
+        return domainMatchTypeSuffix
+    }
+    if strings.HasSuffix(d, "*") {
+        return domainMatchTypePrefix
+    }
+    if strings.Contains(d, "*") {
+        return domainMatchTypeInvalid
+    }
+    return domainMatchTypeExact
+}
+
+func match(domain, host string) (domainMatchType, bool) {
+    switch typ := matchTypeForDomain(domain); typ {
+    case domainMatchTypeInvalid:
+        return typ, false
+    case domainMatchTypeUniversal:
+        return typ, true
+    case domainMatchTypePrefix:
+        // abc.*
+        return typ, strings.HasPrefix(host, strings.TrimSuffix(domain, "*"))
+    case domainMatchTypeSuffix:
+        // *.123
+        return typ, strings.HasSuffix(host, strings.TrimPrefix(domain, "*"))
+    case domainMatchTypeExact:
+        return typ, domain == host
+    default:
+        return domainMatchTypeInvalid, false
+    }
+}
+
+```
+
+### Build `ServiceConfig`
