@@ -19,6 +19,7 @@
   - [Send RDS request](#send-rds-request)
   - [Handle RDS response](#handle-rds-response)
   - [RDS callback](#rds-callback)
+  - [Build `ServiceConfig`](#build-serviceconfig)
 
 The gRPC team believe that Envoy proxy (actually, any data plane) is not the only solution for service mesh. By support xDS protocol gRPC can take the role of Envoy proxy. In general gRPC wants to build a proxy-less service mesh without data plane.  See [xDS Support in gRPC - Mark D. Roth](https://www.youtube.com/watch?v=IbcJ8kNmsrE) and [Traffic Director and gRPC—proxyless services for your service mesh](https://cloud.google.com/blog/products/networking/traffic-director-supports-proxyless-grpc).
 
@@ -1781,8 +1782,8 @@ You may think that only half of the xDS job is down in previous chapter. That's 
 In this stage, we will accomplish the following job:
 
 - Process LDS response and issue RDS request.
-- Extract the `Routes` from the RDS response.
-- Send the `Routes` to xDS resolver.
+- Extract the `Routes` from the RDS response and build `ServiceConfig` base on it.
+- Send the `ServiceConfig` to core and connect with the target RPC server.
 
 ### xDS callback
 
@@ -2335,7 +2336,7 @@ Now we got a message in channel `c.updateCh`, It's time to consume it. From [xDS
 - `handleRDSResp()` set the `w.lastUpdate.routes` to `matchVh`.
 - `handleRDSResp()` calls `w.serviceCb()`, which actually calls `xdsResolver.handleServiceUpdate()`.
   - `handleServiceUpdate()` sends `w.lastUpdate` to channel `r.updateCh`.
-  - `w.serviceCb` is `xdsResolver.handleServiceUpdate()`, `w.serviceCb` is set when `serviceUpdateWatcher` object is created.
+  - `w.serviceCb` is set when `serviceUpdateWatcher` object is first created.
 
 Through the above processing, `watcherInfoWithUpdate` message is converted into `serviceUpdate` message.
 
@@ -2452,6 +2453,331 @@ func match(domain, host string) (domainMatchType, bool) {
     }
 }
 
+// handleServiceUpdate is the callback which handles service updates. It writes
+// the received update to the update channel, which is picked by the run
+// goroutine.
+func (r *xdsResolver) handleServiceUpdate(su serviceUpdate, err error) {
+    if r.closed.HasFired() {
+        // Do not pass updates to the ClientConn once the resolver is closed.
+        return
+    }
+    r.updateCh <- suWithError{su: su, err: err}
+}
+
 ```
 
 ### Build `ServiceConfig`
+
+`xdsResolver.run()` is waiting on the channel `r.updateCh`. Upon receive the `suWithError` message:
+
+- `run()` calls `r.newConfigSelector()` with `update.su` as parameter. `update.su` is of type `serviceUpdate`.
+- `newConfigSelector()` creates `configSelector` according to `serviceUpdate`.
+  - `newConfigSelector()` creates a new `configSelector` first.
+  - For each `Route` in `su.routes`, `newConfigSelector()` updates `cs.routes[i].clusters` and `cs.routes[i].maxStreamDuration`.
+  - For each `Route` in `su.routes`, `newConfigSelector()` calls `routeToMatcher()` to build the `compositeMatcher` and assign it to `cs.routes[i].m`.
+    - `routeToMatcher()` is complex and contains a lot of detail, we will not discuss it in here.
+  - At the same iteration, `r.activeClusters` is also initialized. `cs.clusters[cluster]` is also initialized.
+- `run()` calls `r.sendNewServiceConfig()` with `cs` as parameter. `cs` is of type `configSelector`.
+- `sendNewServiceConfig()` creates `ServiceConfig` based on the `configSelector` and calls `r.cc.UpdateState()` to continue the dial process.
+  - `sendNewServiceConfig()` calls `r.pruneActiveClusters()` to delete entries from `r.activeClusters` with zero references.
+  - `sendNewServiceConfig()` calls `serviceConfigJSON()` to build the service config.
+  - `sendNewServiceConfig()` calls `iresolver.SetConfigSelector()` to set the `ServiceConfig` and `configSelector` in `resolver.State`.
+  - `sendNewServiceConfig()` calls `r.cc.UpdateState()` to continue the  [Dial process part I](dial.md#dial-process-part-i). See the following explanation.
+  - Please note, `sendNewServiceConfig()` will not return until `r.cc.UpdateState()` return. This means `r.curConfigSelector` is old until `sendNewServiceConfig()` return.
+- Finally, `run()` calls `r.curConfigSelector.stop()` to stop the current `ConfigSelector` and replaces the `r.curConfigSelector` with the new `cs`.
+
+For xDS protocol, `DialContext()` just start the xDS resolver goroutine. At the background, xDS resolver
+
+- creates the connection with xDS server. See [Dial to xDS server](#dial-to-xds-server)
+- communicates withe the xDS server to get the `RouteConfiguration`. See [Handle RDS response](#handle-rds-response)
+- transform the `RouteConfiguration` into `ServiceConfig`. This chapter.
+- starts the real connection with the target RPC server. Dial to the target RPC server via `r.cc.UpdateState()`.
+
+OK, This is the end about xDS protocol support. How to use `configSelector` and `ServiceConfig` in business RPC. Please refer to [Load Balancing - ServiceConfig](#TBD).
+
+```go
+// run is a long running goroutine which blocks on receiving service updates
+// and passes it on the ClientConn.
+func (r *xdsResolver) run() {
+    for {
+        select {
+        case <-r.closed.Done():
+            return
+        case update := <-r.updateCh:
+            if update.err != nil {
+                r.logger.Warningf("Watch error on resource %v from xds-client %p, %v", r.target.Endpoint, r.client, update.err)
+                if xdsclient.ErrType(update.err) == xdsclient.ErrorTypeResourceNotFound {
+                    // If error is resource-not-found, it means the LDS
+                    // resource was removed. Ultimately send an empty service
+                    // config, which picks pick-first, with no address, and
+                    // puts the ClientConn into transient failure.  Before we
+                    // can do that, we may need to send a normal service config
+                    // along with an erroring (nil) config selector.
+                    r.sendNewServiceConfig(nil)
+                    // Stop and dereference the active config selector, if one exists.
+                    r.curConfigSelector.stop()
+                    r.curConfigSelector = nil
+                    continue
+                }
+                // Send error to ClientConn, and balancers, if error is not
+                // resource not found.  No need to update resolver state if we
+                // can keep using the old config.
+                r.cc.ReportError(update.err)
+                continue
+            }
+            if update.emptyUpdate {
+                r.sendNewServiceConfig(r.curConfigSelector)
+                continue
+            }
+
+            // Create the config selector for this update.
+            cs, err := r.newConfigSelector(update.su)
+            if err != nil {
+                r.logger.Warningf("Error parsing update on resource %v from xds-client %p: %v", r.target.Endpoint, r.client, err)
+                r.cc.ReportError(err)
+                continue
+            }
+
+            if !r.sendNewServiceConfig(cs) {
+                // JSON error creating the service config (unexpected); erase
+                // this config selector and ignore this update, continuing with
+                // the previous config selector.
+                cs.stop()
+                continue
+            }
+
+            // Decrement references to the old config selector and assign the
+            // new one as the current one.
+            r.curConfigSelector.stop()
+            r.curConfigSelector = cs
+        }
+    }
+}
+
+// newConfigSelector creates the config selector for su; may add entries to
+// r.activeClusters for previously-unseen clusters.
+func (r *xdsResolver) newConfigSelector(su serviceUpdate) (*configSelector, error) {
+    cs := &configSelector{
+        r:        r,
+        routes:   make([]route, len(su.routes)),
+        clusters: make(map[string]*clusterInfo),
+    }
+
+    for i, rt := range su.routes {
+        clusters := newWRR()
+        for cluster, weight := range rt.Action {
+            clusters.Add(cluster, int64(weight))
+
+            // Initialize entries in cs.clusters map, creating entries in
+            // r.activeClusters as necessary.  Set to zero as they will be
+            // incremented by incRefs.
+            ci := r.activeClusters[cluster]
+            if ci == nil {
+                ci = &clusterInfo{refCount: 0}
+                r.activeClusters[cluster] = ci
+            }
+            cs.clusters[cluster] = ci
+        }
+        cs.routes[i].clusters = clusters
+
+        var err error
+        cs.routes[i].m, err = routeToMatcher(rt)
+        if err != nil {
+            return nil, err
+        }
+        if rt.MaxStreamDuration == nil {
+            cs.routes[i].maxStreamDuration = su.ldsConfig.maxStreamDuration
+        } else {
+            cs.routes[i].maxStreamDuration = *rt.MaxStreamDuration
+        }
+    }
+
+    // Account for this config selector's clusters.  Do this after no further
+    // errors may occur.  Note: cs.clusters are pointers to entries in
+    // activeClusters.
+    for _, ci := range cs.clusters {
+        atomic.AddInt32(&ci.refCount, 1)
+    }
+
+    return cs, nil
+}
+
+// A global for testing.
+var newWRR = wrr.NewRandom
+
+// NewRandom creates a new WRR with random.
+func NewRandom() WRR {
+    return &randomWRR{}
+}
+
+// WRR defines an interface that implements weighted round robin.
+type WRR interface {
+    // Add adds an item with weight to the WRR set.
+    //
+    // Add and Next need to be thread safe.
+    Add(item interface{}, weight int64)
+    // Next returns the next picked item.
+    //
+    // Add and Next need to be thread safe.
+    Next() interface{}
+}
+
+var grpcrandInt63n = grpcrand.Int63n
+
+func (rw *randomWRR) Next() (item interface{}) {
+    rw.mu.RLock()
+    defer rw.mu.RUnlock()
+    if rw.sumOfWeights == 0 {
+        return nil
+    }
+    // Random number in [0, sum).
+    randomWeight := grpcrandInt63n(rw.sumOfWeights)
+    for _, item := range rw.items {
+        randomWeight = randomWeight - item.Weight
+        if randomWeight < 0 {
+            return item.Item
+        }
+    }
+
+    return rw.items[len(rw.items)-1].Item
+}
+
+func (rw *randomWRR) Add(item interface{}, weight int64) {
+    rw.mu.Lock()
+    defer rw.mu.Unlock()
+    rItem := &weightedItem{Item: item, Weight: weight}
+    rw.items = append(rw.items, rItem)
+    rw.sumOfWeights += weight
+}
+
+func (rw *randomWRR) String() string {
+    return fmt.Sprint(rw.items)
+}
+
+type route struct {
+    m                 *compositeMatcher // converted from route matchers
+    clusters          wrr.WRR
+    maxStreamDuration time.Duration
+}
+
+func (r route) String() string {
+    return fmt.Sprintf("%s -> { clusters: %v, maxStreamDuration: %v }", r.m.String(), r.clusters, r.maxStreamDuration)
+}
+
+type configSelector struct {
+    r        *xdsResolver
+    routes   []route
+    clusters map[string]*clusterInfo
+}
+
+type clusterInfo struct {
+    // number of references to this cluster; accessed atomically
+    refCount int32
+}
+
+// sendNewServiceConfig prunes active clusters, generates a new service config
+// based on the current set of active clusters, and sends an update to the
+// channel with that service config and the provided config selector.  Returns
+// false if an error occurs while generating the service config and the update
+// cannot be sent.
+func (r *xdsResolver) sendNewServiceConfig(cs *configSelector) bool {
+    // Delete entries from r.activeClusters with zero references;
+    // otherwise serviceConfigJSON will generate a config including
+    // them.
+    r.pruneActiveClusters()
+
+    if cs == nil && len(r.activeClusters) == 0 {
+        // There are no clusters and we are sending a failing configSelector.
+        // Send an empty config, which picks pick-first, with no address, and
+        // puts the ClientConn into transient failure.
+        r.cc.UpdateState(resolver.State{ServiceConfig: r.cc.ParseServiceConfig("{}")})
+        return true
+    }
+
+    sc, err := serviceConfigJSON(r.activeClusters)
+    if err != nil {
+        // JSON marshal error; should never happen.
+        r.logger.Errorf("%v", err)
+        r.cc.ReportError(err)
+        return false
+    }
+    r.logger.Infof("Received update on resource %v from xds-client %p, generated service config: %v", r.target.Endpoint, r.client, sc)
+
+    // Send the update to the ClientConn.
+    state := iresolver.SetConfigSelector(resolver.State{
+        ServiceConfig: r.cc.ParseServiceConfig(sc),
+    }, cs)
+    r.cc.UpdateState(state)
+    return true
+}
+
+// pruneActiveClusters deletes entries in r.activeClusters with zero
+// references.
+func (r *xdsResolver) pruneActiveClusters() {
+    for cluster, ci := range r.activeClusters {
+        if atomic.LoadInt32(&ci.refCount) == 0 {
+            delete(r.activeClusters, cluster)
+        }
+    }
+}
+
+// serviceConfigJSON produces a service config in JSON format representing all
+// the clusters referenced in activeClusters.  This includes clusters with zero
+// references, so they must be pruned first.
+func serviceConfigJSON(activeClusters map[string]*clusterInfo) (string, error) {
+    // Generate children (all entries in activeClusters).
+    children := make(map[string]xdsChildConfig)
+    for cluster := range activeClusters {
+        children[cluster] = xdsChildConfig{
+            ChildPolicy: newBalancerConfig(cdsName, cdsBalancerConfig{Cluster: cluster}),
+        }
+    }
+
+    sc := serviceConfig{
+        LoadBalancingConfig: newBalancerConfig(
+            xdsClusterManagerName, xdsClusterManagerConfig{Children: children},
+        ),
+    }
+
+    bs, err := json.Marshal(sc)
+    if err != nil {
+        return "", fmt.Errorf("failed to marshal json: %v", err)
+    }
+    return string(bs), nil
+}
+
+const (
+    cdsName               = "cds_experimental"
+    xdsClusterManagerName = "xds_cluster_manager_experimental"
+)
+
+type serviceConfig struct {
+    LoadBalancingConfig balancerConfig `json:"loadBalancingConfig"`
+}
+
+type balancerConfig []map[string]interface{}
+
+func newBalancerConfig(name string, config interface{}) balancerConfig {
+    return []map[string]interface{}{{name: config}}
+}
+
+type cdsBalancerConfig struct {
+    Cluster string `json:"cluster"`
+}
+
+type xdsChildConfig struct {
+    ChildPolicy balancerConfig `json:"childPolicy"`
+}
+
+type xdsClusterManagerConfig struct {
+    Children map[string]xdsChildConfig `json:"children"`
+}
+
+// SetConfigSelector sets the config selector in state and returns the new
+// state.
+func SetConfigSelector(state resolver.State, cs ConfigSelector) resolver.State {
+    state.Attributes = state.Attributes.WithValues(csKey, cs)
+    return state
+}
+
+```
