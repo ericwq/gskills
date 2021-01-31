@@ -45,6 +45,8 @@ For xDS protocol support, `RouteConfiguration` and `ServiceConfig` are important
 - Transform `RouteConfiguration` into `ServiceConfig`.
 - Use `ServiceConfig` and balancer to make the business RPC call.
 
+You may wonder what about the `ClusterLoadAssignment`? Let me remind you this chapter only cover LDS/RDS. The gRPC team seperate the ADS into two parts: resolver handles LDS/RDS, balancer handles CDS/EDS. We will discuss the latter in [Load Balancing - xDS](#lbxds.md).
+
 Before jump into the code, Let's prepare some maps to avoid lost in the code sea. Later you will need more maps. Envoy is a huge complex projct. xDS support is try to implement part of Envoy features. Which means xDS protocol support in gRPC is also a complex project.
 
 ## Protocol buffers map for xDS v3 API
@@ -2493,7 +2495,7 @@ For xDS protocol, `DialContext()` just start the xDS resolver goroutine. At the 
 - transform the `RouteConfiguration` into `ServiceConfig`. This chapter.
 - starts the real connection with the target RPC server. Dial to the target RPC server via `r.cc.UpdateState()`.
 
-OK, This is the end about xDS protocol support. How to use `configSelector` and `ServiceConfig` in business RPC. Please refer to [Load Balancing - ServiceConfig](#TBD).
+OK, This is the end about xDS protocol support. How to use `configSelector` and `ServiceConfig` in business RPC. Please refer to [Load Balancing - xDS](#lbxds.md).
 
 ```go
 // run is a long running goroutine which blocks on receiving service updates
