@@ -2495,7 +2495,7 @@ For xDS protocol, `DialContext()` just start the xDS resolver goroutine. At the 
 - transform the `RouteConfiguration` into `ServiceConfig`. This chapter.
 - starts the real connection with the target RPC server. Dial to the target RPC server via `r.cc.UpdateState()`.
 
-OK, This is the end about xDS protocol support. How to use `configSelector` and `ServiceConfig` in business RPC. Please refer to [Load Balancing - xDS](#lbxds.md).
+OK, This is the end about xDS protocol support. How to use `configSelector` and `ServiceConfig` in business RPC. Please refer to [Load Balancing - xDS](lbxds.md).
 
 ```go
 // run is a long running goroutine which blocks on receiving service updates
