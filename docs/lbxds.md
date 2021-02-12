@@ -99,3 +99,54 @@ func (ccr *ccResolverWrapper) UpdateState(s resolver.State) {
 }
 
 ```
+
+```go
+    r := &xdsResolver{activeClusters: map[string]*clusterInfo{
+        "zero": {refCount: 0},
+        "one":  {refCount: 1},
+        "two":  {refCount: 2},
+    }}
+
+    // to service config
+    result, err := serviceConfigJSON(r.activeClusters)
+```
+
+```json
+{
+  "loadBalancingConfig": [
+    {
+      "xds_cluster_manager_experimental": {
+        "children": {
+          "one": {
+            "childPolicy": [
+              {
+                "cds_experimental": {
+                  "cluster": "one"
+                }
+              }
+            ]
+          },
+          "two": {
+            "childPolicy": [
+              {
+                "cds_experimental": {
+                  "cluster": "two"
+                }
+              }
+            ]
+          },
+          "zero": {
+            "childPolicy": [
+              {
+                "cds_experimental": {
+                  "cluster": "zero"
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}
+```

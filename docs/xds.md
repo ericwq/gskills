@@ -1028,7 +1028,7 @@ func (c *clientImpl) WatchListener(serviceName string, cb func(ListenerUpdate, e
         ldsCallback: cb,
     }
 
-    wi.expiryTimer = ti<F6>me.AfterFunc(c.watchExpiryTimeout, func() {
+    wi.expiryTimer = time.AfterFunc(c.watchExpiryTimeout, func() {
         wi.timeout()
     })
     return c.watch(wi)
