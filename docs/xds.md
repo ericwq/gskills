@@ -256,10 +256,10 @@ admin:
 
 ### `xdsResolverBuilder`
 
-If the user application uses `xds:///example.grpc.io` as target URI, gRPC will start the `XdsClient` initialization process. `xdsResolverBuilder.Build()` will be called to prepare for the interaction with xDS server and return the resolver to gRPC.
+If the user application uses `xds:///example.grpc.io` as target URI, gRPC will start the `XdsClient` initialization procedure. `xdsResolverBuilder.Build()` will be called to prepare for the interaction with xDS server and return the resolver to gRPC.
 
 - `Build()` calls `newXDSClient()` to build the `XdsClient`.
-- `Build()` calls `watchService()` to register a watch. See [Communicate with xDS server](#communicate-with-xds-server) for detail.
+- `Build()` calls `watchService()` to start the LDS request. See [Communicate with xDS server](#communicate-with-xds-server) for detail.
 - `Build()` starts a goroutine `r.run()` to receive the service update. See [Transform into ServiceConfig](#transform-into-serviceconfig) for detail.
 
 Let's discuss the `newXDSClient()` in detail next.
@@ -992,6 +992,8 @@ According to the xDS protocol, client need to send the first ADS request to iden
   - Calls `c.apiClient.AddWatch()`, which actually calls `TransportHelper.AddWatch()`.
   - `AddWatch()` simply sends a `watchAction` to unbounded buffer `t.sendCh`.
 - Now the resource is not in cache, `watch()` skips the remain part to return.
+
+Please note: `watchService()` use the `r.target.Endpoint` as the argument for the `serviceName` parameter. This means the LDS resource name is the user's target name. In our case, it's `example.grpc.io`.
 
 After the invocation of `watch()`, `c.ldsWatchers()` got a new `watchInfo` record under the `wi.target` name.
 
@@ -1801,8 +1803,8 @@ In this stage, we will accomplish the following job:
   - `ldsCallback` is set by `WatchListener()`, it's `w.handleLDSResp()`.
   - `rdsCallback` is set by `WatchRouteConfig()`, it's `w.handleRDSResp()`.
   - `serviceUpdateWatcher.serviceCb` is set by `watchService()`, it's  `r.handleServiceUpdate`.
-- `w.handleLDSResp()` updates `w.lastUpdate.ldsConfig`, which means update the `maxStreamDuration` to the new value `update.MaxStreamDuration`.
-- `w.handleLDSResp()` checks if the new `RouteConfigName` is same as the previous. If it does not change and `w.lastUpdate.ldsConfig` does change, calls `w.serviceCb`, which is actually `r.handleServiceUpdate`.
+- `w.handleLDSResp()` updates `w.lastUpdate.ldsConfig`, which updates the `maxStreamDuration` to the new value `update.MaxStreamDuration`.
+- `w.handleLDSResp()` checks if the new `RouteConfigName` is same as the previous. The route name didn't change but the LDS data did, calls, calls `w.serviceCb`, which is actually `r.handleServiceUpdate`.
   - `handleServiceUpdate()` sends `w.lastUpdate` to channel `r.updateCh`.
 - If the new `RouteConfigName` is different from the previous value, `w.handleLDSResp()` calls `w.c.WatchRouteConfig()` and set `w.rdsCancel`.
   - `w.c.WatchRouteConfig()` is actually `clientImpl.WatchRouteConfig()`.
@@ -1817,6 +1819,8 @@ In this stage, we will accomplish the following job:
     - `AddWatch()` simply sends a `watchAction` to unbounded buffer `t.sendCh`.
     - Since the resource is not in cache, `watch()` skips the remain part to return.
 - After the return of `WatchRouteConfig()`, `w.rdsCancel` is set.
+
+Please note: `handleLDSResp()` calls `WatchRouteConfig()`, `WatchRouteConfig()` uses the `update.RouteConfigName` as the resource name for RDS request. `update.RouteConfigName` is actually based on the value from LDS response `Listener.ApiListener.ApiListener.HttpConnectionManager.rds.route_config_name`.  Which means gRPC gets the RDS resource name from the LDS response. Then gRPC sends RDS request with the specified resource name.
 
 After the invocation of `handleServiceUpdate()`, a `w.lastUpdate` was sent to channel `r.updateCh`. `w.lastUpdate` is a `serviceUpdate`. In our case, only `sesrviceUpdate.ldsConfig` field is modified.
 
@@ -2340,7 +2344,9 @@ Now we got a message in channel `c.updateCh`, It's time to consume it. From [xDS
   - `handleServiceUpdate()` sends `w.lastUpdate` to channel `r.updateCh`.
   - `w.serviceCb` is set when `serviceUpdateWatcher` object is first created.
 
-Through the above processing, `watcherInfoWithUpdate` message is converted into `serviceUpdate` message.
+Please note: `findBestMatchingVirtualHost()` uses the `w.serviceName` as the `host` parameter. Which means the domain match for `VirtualHost` is done by using client target server name. In our case client target server name is `example.grpc.io`.
+
+Through the above processing, `RouteConfigUpdate` message is converted into `serviceUpdate` message. In the end, `handleServiceUpdate()` will send a `suWithError` message which contains `serviceUpdate` message. `serviceUpdate` contains `routes` and `ldsConfig`.
 
 ```go
 func (w *serviceUpdateWatcher) handleRDSResp(update xdsclient.RouteConfigUpdate, err error) {
@@ -2466,6 +2472,23 @@ func (r *xdsResolver) handleServiceUpdate(su serviceUpdate, err error) {
     r.updateCh <- suWithError{su: su, err: err}
 }
 
+// serviceUpdate contains information received from the LDS/RDS responses which
+// are of interest to the xds resolver. The RDS request is built by first
+// making a LDS to get the RouteConfig name.
+type serviceUpdate struct {
+    // routes contain matchers+actions to route RPCs.
+    routes []*xdsclient.Route
+    // ldsConfig contains configuration that applies to all routes.
+    ldsConfig ldsConfig
+}
+
+// ldsConfig contains information received from the LDS responses which are of
+// interest to the xds resolver.
+type ldsConfig struct {
+    // maxStreamDuration is from the HTTP connection manager's
+    // common_http_protocol_options field.
+    maxStreamDuration time.Duration
+}
 ```
 
 ### Build `ServiceConfig`
