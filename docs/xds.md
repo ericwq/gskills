@@ -1804,7 +1804,7 @@ In this stage, we will accomplish the following job:
   - `rdsCallback` is set by `WatchRouteConfig()`, it's `w.handleRDSResp()`.
   - `serviceUpdateWatcher.serviceCb` is set by `watchService()`, it's  `r.handleServiceUpdate`.
 - `w.handleLDSResp()` updates `w.lastUpdate.ldsConfig`, which updates the `maxStreamDuration` to the new value `update.MaxStreamDuration`.
-- `w.handleLDSResp()` checks if the new `RouteConfigName` is same as the previous. The route name didn't change but the LDS data did, calls, calls `w.serviceCb`, which is actually `r.handleServiceUpdate`.
+- `w.handleLDSResp()` checks if the new `RouteConfigName` is same as the previous. If the route name didn't change but the LDS data did, calls `w.serviceCb`, which is actually `r.handleServiceUpdate`.
   - `handleServiceUpdate()` sends `w.lastUpdate` to channel `r.updateCh`.
 - If the new `RouteConfigName` is different from the previous value, `w.handleLDSResp()` calls `w.c.WatchRouteConfig()` and set `w.rdsCancel`.
   - `w.c.WatchRouteConfig()` is actually `clientImpl.WatchRouteConfig()`.
@@ -2344,7 +2344,7 @@ Now we got a message in channel `c.updateCh`, It's time to consume it. From [xDS
   - `handleServiceUpdate()` sends `w.lastUpdate` to channel `r.updateCh`.
   - `w.serviceCb` is set when `serviceUpdateWatcher` object is first created.
 
-Please note: `findBestMatchingVirtualHost()` uses the `w.serviceName` as the `host` parameter. Which means the domain match for `VirtualHost` is done by using client target server name. In our case client target server name is `example.grpc.io`.
+Please note: `findBestMatchingVirtualHost()` uses the `w.serviceName` as the `host` parameter. Which means the domain match for `VirtualHost` is performed by using client target server name. In our case client target server name is `example.grpc.io`. `handleRDSResp` filters the `VirtualHost` according to `domains` field.
 
 Through the above processing, `RouteConfigUpdate` message is converted into `serviceUpdate` message. In the end, `handleServiceUpdate()` will send a `suWithError` message which contains `serviceUpdate` message. `serviceUpdate` contains `routes` and `ldsConfig`.
 
@@ -2495,30 +2495,34 @@ type ldsConfig struct {
 
 `xdsResolver.run()` is waiting on the channel `r.updateCh`. Upon receive the `suWithError` message:
 
-- `run()` calls `r.newConfigSelector()` with `update.su` as parameter. `update.su` is of type `serviceUpdate`.
+- `run()` calls `r.newConfigSelector()` with `update.su` as parameter. `update.su` is of type `serviceUpdate`. `serviceUpdate` contains `routes`.
 - `newConfigSelector()` creates `configSelector` according to `serviceUpdate`.
   - `newConfigSelector()` creates a new `configSelector` first.
   - For each `Route` in `su.routes`, `newConfigSelector()` updates `cs.routes[i].clusters` and `cs.routes[i].maxStreamDuration`.
   - For each `Route` in `su.routes`, `newConfigSelector()` calls `routeToMatcher()` to build the `compositeMatcher` and assign it to `cs.routes[i].m`.
-    - `routeToMatcher()` is complex and contains a lot of detail, we will not discuss it in here.
-  - At the same iteration, `r.activeClusters` is also initialized. `cs.clusters[cluster]` is also initialized.
+    - `routeToMatcher()` contains a lot of detail, we will not discuss it in here.
+    - The purpose of `routeToMatcher()` is prepare the regex matcher for real request match.
+  - At the same iteration, `r.activeClusters` is initialized. `cs.clusters[cluster]` is also initialized with the same values.
 - `run()` calls `r.sendNewServiceConfig()` with `cs` as parameter. `cs` is of type `configSelector`.
 - `sendNewServiceConfig()` creates `ServiceConfig` based on the `configSelector` and calls `r.cc.UpdateState()` to continue the dial process.
   - `sendNewServiceConfig()` calls `r.pruneActiveClusters()` to delete entries from `r.activeClusters` with zero references.
-  - `sendNewServiceConfig()` calls `serviceConfigJSON()` to build the service config.
+  - `sendNewServiceConfig()` calls `serviceConfigJSON()` to generate a new service config based on the current set of active clusters.
   - `sendNewServiceConfig()` calls `iresolver.SetConfigSelector()` to set the `ServiceConfig` and `configSelector` in `resolver.State`.
   - `sendNewServiceConfig()` calls `r.cc.UpdateState()` to continue the  [Dial process part I](dial.md#dial-process-part-i). See the following explanation.
   - Please note, `sendNewServiceConfig()` will not return until `r.cc.UpdateState()` return. This means `r.curConfigSelector` is old until `sendNewServiceConfig()` return.
 - Finally, `run()` calls `r.curConfigSelector.stop()` to stop the current `ConfigSelector` and replaces the `r.curConfigSelector` with the new `cs`.
 
-For xDS protocol, `DialContext()` just start the xDS resolver goroutine. At the background, xDS resolver
+Upon receives the `su.routes` message, `xdsResolver.run()` generates a new service config, the root of this service config is the `xds_cluster_manager_experimental`, the children of root is all entries in `activeClusters`, each entries has the same `cds_experimental`. This service config is the key to understand the next process. We will show the example of this service config in the next article.
 
-- creates the connection with xDS server. See [Dial to xDS server](#dial-to-xds-server)
-- communicates withe the xDS server to get the `RouteConfiguration`. See [Handle RDS response](#handle-rds-response)
-- transform the `RouteConfiguration` into `ServiceConfig`. This chapter.
-- starts the real connection with the target RPC server. Dial to the target RPC server via `r.cc.UpdateState()`.
+For xDS protocol, `DialContext()` starts the xDS resolver goroutine. At the background, xDS resolver
 
-OK, This is the end about xDS protocol support. How to use `configSelector` and `ServiceConfig` in business RPC. Please refer to [Load Balancing - xDS](lbxds.md).
+- Creates the connection with xDS server. See [Dial to xDS server](#dial-to-xds-server)
+- Communicates withe the xDS server to get the `RouteConfiguration` and transform it into `RouteConfigUpdate`. See [Handle RDS response](#handle-rds-response)
+- Process the `RouteConfigUpdate` via matching the target RPC server domain and return the matched `[]Route` in `serviceUpdate`. See [RDS callback](#rds-callback)
+- Transform the `[]Route` into `ServiceConfig`. This chapter.
+- Continue the dial process to the target RPC server. We will discuss `r.cc.UpdateState()` in next article.
+
+OK, This is the LDS/RDS part about xDS protocol support. How to use `configSelector` and `ServiceConfig` in business RPC. Please refer to [Load Balancing - xDS](lbxds.md).
 
 ```go
 // run is a long running goroutine which blocks on receiving service updates
