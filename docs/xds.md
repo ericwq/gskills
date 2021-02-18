@@ -1775,7 +1775,7 @@ You may think that only half of the xDS job is down in previous chapter. That's 
 - Yellow box represents the important type and method/function.
 - Green box represents a function run in a dedicated goroutine.
 - Arrow represents the call direction and order.
-- Red dot means the box is a continue part form other map.
+- Red dot means the box is a continue part from other map.
 - Blue bar and arrow represents the channel communication for `t.sendCh`.
 - Grey bar and arrow represents the channel communication for `r.updateCh`.
 - Pink bar and arrow represents the channel communication for `c.upateCh`.
@@ -2507,6 +2507,7 @@ type ldsConfig struct {
 - `sendNewServiceConfig()` creates `ServiceConfig` based on the `configSelector` and calls `r.cc.UpdateState()` to continue the dial process.
   - `sendNewServiceConfig()` calls `r.pruneActiveClusters()` to delete entries from `r.activeClusters` with zero references.
   - `sendNewServiceConfig()` calls `serviceConfigJSON()` to generate a new service config based on the current set of active clusters.
+  - `sendNewServiceConfig()` calls `r.cc.ParseServiceConfig()` to parse the generated service config JSON data. See [LoadBalancingConfig JSON parsing](bconfig.md) for detail.
   - `sendNewServiceConfig()` calls `iresolver.SetConfigSelector()` to set the `ServiceConfig` and `configSelector` in `resolver.State`.
   - `sendNewServiceConfig()` calls `r.cc.UpdateState()` to continue the  [Dial process part I](dial.md#dial-process-part-i). See the following explanation.
   - Please note, `sendNewServiceConfig()` will not return until `r.cc.UpdateState()` return. This means `r.curConfigSelector` is old until `sendNewServiceConfig()` return.
@@ -2520,7 +2521,7 @@ For xDS protocol, `DialContext()` starts the xDS resolver goroutine. At the back
 - Communicates withe the xDS server to get the `RouteConfiguration` and transform it into `RouteConfigUpdate`. See [Handle RDS response](#handle-rds-response)
 - Process the `RouteConfigUpdate` via matching the target RPC server domain and return the matched `[]Route` in `serviceUpdate`. See [RDS callback](#rds-callback)
 - Transform the `[]Route` into `ServiceConfig`. This chapter.
-- Continue the dial process to the target RPC server. We will discuss `r.cc.UpdateState()` in next article.
+- continue the dial process to the target RPC server. We will discuss `r.cc.UpdateState()` in next article.
 
 OK, This is the LDS/RDS part about xDS protocol support. How to use `configSelector` and `ServiceConfig` in business RPC. Please refer to [Load Balancing - xDS](lbxds.md).
 
