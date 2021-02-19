@@ -1,7 +1,18 @@
 
 # Load Balancing - xDS protocol
 
-In the previous article [xDS protocol support](xds.md), we discussed the xDS resolver and LDS/RDS. In this article we will discuss the xDS balancer and CDS/EDS. In my guess: RDS returns a group of cluster name based on the domain matched `Route`. Try to find every entries in cluster name via CDS/EDS is not a efficient way. The following is the example service config produced by `serviceConfigJSON()`. In [Build `ServiceConfig`](xds.md#build-serviceconfig), `sendNewServiceConfig()` produces the similar service config file.
+- [Initialize CDS balancer](#initialize-cds-balancer)
+  - [Apply service config](#apply-service-config)
+  - [Create cluster manager](#create-cluster-manager)
+  - [Initialize balancer group](#initialize-balancer-group)
+  - [Create CDS balancer](#create-cds-balancer)
+  - [Notify CDS balancer](#notify-cds-balancer)
+
+In the previous article [xDS protocol support](xds.md), we discussed the xDS resolver and LDS/RDS. In this article we will discuss the xDS balancer and CDS/EDS. In my guess: RDS returns a group of cluster name based on the domain matched `Route`. The matching `path` and other matching criteria can only be performed after we receive a real RPC request. It has to postpone the CDS/EDS to that time.
+
+The following is the example service config produced by `serviceConfigJSON()`. In [Build `ServiceConfig`](xds.md#build-serviceconfig), `sendNewServiceConfig()` produces the similar service config file. You can refer to [LoadBalancingConfig JSON parsing](bconfig.md) to understand the service config file.
+
+This example is based on [config_test.go](https://github.com/grpc/grpc-go/blob/master/xds/internal/balancer/clustermanager/config_test.go). This test version is very close to the real one.
 
 ```json
 {
@@ -85,6 +96,8 @@ In the previous article [xDS protocol support](xds.md), we discussed the xDS res
 }
 ```
 
+I use the following go code to generate the following simple version JSON file. This version is simpler and easy to understand.
+
 ```go
     r := &xdsResolver{activeClusters: map[string]*clusterInfo{
         "zero": {refCount: 0},
@@ -136,7 +149,7 @@ In the previous article [xDS protocol support](xds.md), we discussed the xDS res
 }
 ```
 
-In [Build `ServiceConfig`](xds.md#build-serviceconfig), `r.cc.UpdateState()` will be called in `xdsResolver.sendNewServiceConfig()` once RDS response is processed. `r.cc.UpdateState()` is actually `ccResolverWrapper.UpdateState()`. The parameter of `r.cc.UpdateState()` is `resolver.State`, which is a struct, resolver uses this struct to notifiy the gRPC core. For xDS, `resolver.State` contains the following fields:
+In [Build `ServiceConfig`](xds.md#build-serviceconfig), `r.cc.UpdateState()` will be called in `xdsResolver.sendNewServiceConfig()` once RDS response is processed. `r.cc.UpdateState()` is actually `ccResolverWrapper.UpdateState()`. The parameter of `r.cc.UpdateState()` is `resolver.State`, which is a struct, resolver uses this struct to notify the gRPC core. For xDS, `resolver.State` contains the following fields:
 
 - The `Addresses` field: NOT used by xDS resolver.
 - The `ServiceConfig` field: `xdsResolver.sendNewServiceConfig()` builds `ServiceConfig` based on `xdsResolver.activeClusters`.
@@ -210,7 +223,7 @@ func SetConfigSelector(state resolver.State, cs ConfigSelector) resolver.State {
 
 ## Initialize CDS balancer
 
-In this stage, we will continue the discussion of xDS protocol: CDS part. With the previous service config in hands, it's the time to initialize the xds balancer. Here is the map for this stage. In this map:
+In this stage, we will continue the discussion of xDS protocol: CDS part. With the previous service config in hands, it's the time to initialize the CDS balancer. Here is the map for this stage. In this map:
 
 - Yellow box represents the important type and method/function.
 - Green box represents a function run in a dedicated goroutine.
@@ -222,7 +235,7 @@ In this stage, we will continue the discussion of xDS protocol: CDS part. With t
 
 ![xDS protocol: 4](../images/images.012.png)
 
-### UpdateState
+### Apply service config
 
 In `sendNewServiceConfig()`, resolver calls `r.cc.UpdateState()` to notify gRPC core the resolver state.
 
@@ -336,19 +349,19 @@ func (cc *ClientConn) updateResolverState(s resolver.State, err error) error {
 }
 ```
 
-### Create balancer manager
+### Create cluster manager
 
 In `applyServiceConfigAndBalancer()`:
 
 - `ServiceConfig` is assigned to `cc.sc`. `configSelector` is also assigned to `cc.safeConfigSelector`.
-- The most important step is to determine the value of `newBalancerName`.
-- In our case, the value of `newBalancerName` is `cc.sc.lbConfig.name`, which is actually `"xds_cluster_manager_experimental"` based on the previous service config example.
+- The most important thing is to determine the value of `newBalancerName`.
+- In our case, the value of `newBalancerName` is the value of `cc.sc.lbConfig.name`, which is actually `"xds_cluster_manager_experimental"` based on the previous service config example.
 - `switchBalancer()` will be called to prepare the new balancer:
-  - calls `balancer.Get()` to get the builder of `"xds_cluster_manager_experimental"`.
-  - calls `newCCBalancerWrapper()` to create the `cc.balancerWrapper` and build the new balancer mananger.
+  - calls `balancer.Get()` to get the builder of `"xds_cluster_manager_experimental"` balancer. Which is a special balancer: cluster manager.
+  - calls `newCCBalancerWrapper()` to create the `cc.balancerWrapper` and build the new cluster manager.
     - In `newCCBalancerWrapper()`, `ccBalancerWrapper` is created.
-    - Starts a new goroutine `ccb.watcher()`. `watcher()` waits for the `ccb.scBuffer.Get()` channel. Unpon receive the `scStateUpdate` message, `watcher()` calls `ccb.balancer.UpdateSubConnState()`
-    - Create the new balncer `ccb.balancer` by calling `Build()`. For `"xds_cluster_manager_experimental"` balancer. `builder.Build()` will be called to create the xDS balancer manager. It's a special kind of balancer. It's a balancer to manage the children balancers.
+    - Starts a new goroutine `ccb.watcher()`. `watcher()` waits for the `ccb.scBuffer.Get()` channel. Upon receive the `scStateUpdate` message, `watcher()` calls `ccb.balancer.UpdateSubConnState()`
+    - Create the new balancer by calling `Build()`. For `"xds_cluster_manager_experimental"` balancer. `builder.Build()` will be called to create the CDS cluster manager. It's a balancer to manage the children balancers.
 
 ```go
 func (cc *ClientConn) applyServiceConfigAndBalancer(sc *ServiceConfig, configSelector iresolver.ConfigSelector, addrs []resolver.Address) {
@@ -507,17 +520,14 @@ func (builder) Name() string {
 }
 ```
 
-### updateClientConnState
-
-`updateClientConnState()` is called with the parameter, `balancer.ClientConnState`:
+In `updateResolverState()`, now the cluster manager and `ccBalancerWrapper` is both created. `ccBalancerWrapper.updateClientConnState()` is called with the parameter `balancer.ClientConnState`:
 
 - the `ResolverState` field of `balancer.ClientConnState` is same as parameter of `resolver.State`.
 - the `BalancerConfig` field of `balancer.ClientConnState` is `cc.sc.lbConfig.cfg`. which is actually `children` object of our sample service config file.
 
-`updateResolverState()` calls `ccBalancerWrapper.updateClientConnState()`.
+In `ccBalancerWrapper.updateClientConnState()`, `ccb.balancer.UpdateClientConnState()` is called, which is actually `bal.UpdateClientConnState()`. `UpdateClientConnState()` calls `b.updateChildren()` with the same parameter `resolver.State` and `cc.sc.lbConfig.cfg`.
 
-- `updateClientConnState()` calls `ccb.balancer.UpdateClientConnState()`, which is actually `bal.UpdateClientConnState()`
-- `UpdateClientConnState()` calls `b.updateChildren()` with the same parameter `resolver.State` and `cc.sc.lbConfig.cfg`.
+Next, let's continue the discussion of `updateChildren()`.
 
 ```go
 func (ccb *ccBalancerWrapper) updateClientConnState(ccs *balancer.ClientConnState) error {
@@ -538,3 +548,280 @@ func (b *bal) UpdateClientConnState(s balancer.ClientConnState) error {
 }
 ```
 
+### Initialize balancer group
+
+In `updateChildren()`, for each policy in `newConfig.Children`:
+
+- If it's a new sub-balancer, Calls `b.stateAggregator.add()` to add it to the picker map.
+  - `b.stateAggregator.add()` is actually `balancerStateAggregator.add()`
+  - `add()` adds an item in `bsa.idToPickerState`, which is a `map[string]*subBalancerState`
+- For new sub-balancer, call `b.bg.Add()` to add it to the balancer group.
+  - `b.bg.Add()` is actually `BalancerGroup.Add()`.
+  - `Add()` uses `newT.ChildPolicy.Name` as the name of balancer builder.
+  - In `Add()`, `bg.outgoingStarted` is already true.
+  - In `Add()`, `subBalancerWrapper` is created with the provided balancer builder. In our case, the balancer builder is `cds_experimental`.
+  - In `Add()`, `sbc.startBalancer()` is called to create the CDS balancer.
+- Calls `b.bg.UpdateClientConnState()`, using the value of `newT.ChildPolicy.Config` fills the `BalancerConfig` field in `balancer.ClientConnState` parameter.
+
+Next, we will first discuss `sbc.startBalancer()`, then we will discuss `b.bg.UpdateClientConnState()`.
+
+```go
+func (b *bal) updateChildren(s balancer.ClientConnState, newConfig *lbConfig) {
+    update := false
+    addressesSplit := hierarchy.Group(s.ResolverState.Addresses)
+
+    // Remove sub-pickers and sub-balancers that are not in the new cluster list.
+    for name := range b.children {
+        if _, ok := newConfig.Children[name]; !ok {
+            b.stateAggregator.remove(name)
+            b.bg.Remove(name)
+            update = true
+        }
+    }
+
+    // For sub-balancers in the new cluster list,
+    // - add to balancer group if it's new,
+    // - forward the address/balancer config update.
+    for name, newT := range newConfig.Children {
+        if _, ok := b.children[name]; !ok {
+            // If this is a new sub-balancer, add it to the picker map.
+            b.stateAggregator.add(name)
+            // Then add to the balancer group.
+            b.bg.Add(name, balancer.Get(newT.ChildPolicy.Name))
+        }
+        // TODO: handle error? How to aggregate errors and return?
+        _ = b.bg.UpdateClientConnState(name, balancer.ClientConnState{
+            ResolverState: resolver.State{
+                Addresses:     addressesSplit[name],
+                ServiceConfig: s.ResolverState.ServiceConfig,
+                Attributes:    s.ResolverState.Attributes,
+            },
+            BalancerConfig: newT.ChildPolicy.Config,
+        })
+    }
+
+    b.children = newConfig.Children
+    if update {
+        b.stateAggregator.buildAndUpdate()
+    }
+}
+
+// add adds a sub-balancer state with weight. It adds a place holder, and waits
+// for the real sub-balancer to update state.
+//
+// This is called when there's a new child.
+func (bsa *balancerStateAggregator) add(id string) {
+    bsa.mu.Lock()
+    defer bsa.mu.Unlock()
+    bsa.idToPickerState[id] = &subBalancerState{
+        // Start everything in CONNECTING, so if one of the sub-balancers
+        // reports TransientFailure, the RPCs will still wait for the other
+        // sub-balancers.
+        state: balancer.State{
+            ConnectivityState: connectivity.Connecting,
+            Picker:            base.NewErrPicker(balancer.ErrNoSubConnAvailable),
+        },
+        stateToAggregate: connectivity.Connecting,
+    }
+}
+
+// Add adds a balancer built by builder to the group, with given id.
+func (bg *BalancerGroup) Add(id string, builder balancer.Builder) {
+    // Store data in static map, and then check to see if bg is started.
+    bg.outgoingMu.Lock()
+    var sbc *subBalancerWrapper
+    // If outgoingStarted is true, search in the cache. Otherwise, cache is
+    // guaranteed to be empty, searching is unnecessary.
+    if bg.outgoingStarted {
+        if old, ok := bg.balancerCache.Remove(id); ok {
+            sbc, _ = old.(*subBalancerWrapper)
+            if sbc != nil && sbc.builder != builder {
+                // If the sub-balancer in cache was built with a different
+                // balancer builder, don't use it, cleanup this old-balancer,
+                // and behave as sub-balancer is not found in cache.
+                //
+                // NOTE that this will also drop the cached addresses for this
+                // sub-balancer, which seems to be reasonable.
+                sbc.stopBalancer()
+                // cleanupSubConns must be done before the new balancer starts,
+                // otherwise new SubConns created by the new balancer might be
+                // removed by mistake.
+                bg.cleanupSubConns(sbc)
+                sbc = nil
+            }
+        }
+    }
+    if sbc == nil {
+        sbc = &subBalancerWrapper{
+            ClientConn: bg.cc,
+            id:         id,
+            group:      bg,
+            builder:    builder,
+        }
+        if bg.outgoingStarted {
+            // Only start the balancer if bg is started. Otherwise, we only keep the
+            // static data.
+            sbc.startBalancer()
+        }
+    } else {
+        // When brining back a sub-balancer from cache, re-send the cached
+        // picker and state.
+        sbc.updateBalancerStateWithCachedPicker()
+    }
+    bg.idToBalancerConfig[id] = sbc
+    bg.outgoingMu.Unlock()
+}
+
+```
+
+### Create CDS balancer
+
+In `startBalancer()`, calls the `Build()` method of `cds_experimental` balancer. Which is actually calls `cdsBB.Build()`.
+
+- `cdsBB.Build()` creates a `cdsBalancer`. Assigns the singleton `xDSClient` to `b.xdsClient`.
+- `cdsBB.Build()` starts a goroutine `b.run()`. `b.run()` is waiting for the message on channel `b.updateCh`.
+
+We will discuss `b.run()` in separate chapter.
+
+```go
+func (sbc *subBalancerWrapper) startBalancer() {
+    b := sbc.builder.Build(sbc, balancer.BuildOptions{})
+    sbc.group.logger.Infof("Created child policy %p of type %v", b, sbc.builder.Name())
+    sbc.balancer = b
+    if sbc.ccState != nil {
+        b.UpdateClientConnState(*sbc.ccState)
+    }
+}
+
+// cdsBB (short for cdsBalancerBuilder) implements the balancer.Builder
+// interface to help build a cdsBalancer.
+// It also implements the balancer.ConfigParser interface to help parse the
+// JSON service config, to be passed to the cdsBalancer.
+type cdsBB struct{}
+
+// Build creates a new CDS balancer with the ClientConn.
+func (cdsBB) Build(cc balancer.ClientConn, opts balancer.BuildOptions) balancer.Balancer {
+    b := &cdsBalancer{
+        bOpts:       opts,
+        updateCh:    buffer.NewUnbounded(),
+        closed:      grpcsync.NewEvent(),
+        cancelWatch: func() {}, // No-op at this point.
+        xdsHI:       xdsinternal.NewHandshakeInfo(nil, nil),
+    }
+    b.logger = prefixLogger((b))
+    b.logger.Infof("Created")
+
+    client, err := newXDSClient()
+    if err != nil {
+        b.logger.Errorf("failed to create xds-client: %v", err)
+        return nil
+    }
+    b.xdsClient = client
+
+    var creds credentials.TransportCredentials
+    switch {
+    case opts.DialCreds != nil:
+        creds = opts.DialCreds
+    case opts.CredsBundle != nil:
+        creds = opts.CredsBundle.TransportCredentials()
+    }
+    if xc, ok := creds.(interface{ UsesXDS() bool }); ok && xc.UsesXDS() {
+        b.xdsCredsInUse = true
+    }
+    b.logger.Infof("xDS credentials in use: %v", b.xdsCredsInUse)
+
+    b.ccw = &ccWrapper{
+        ClientConn: cc,
+        xdsHI:      b.xdsHI,
+    }
+    go b.run()
+    return b
+}
+
+// Name returns the name of balancers built by this builder.
+func (cdsBB) Name() string {
+    return cdsName
+}
+const (
+    cdsName = "cds_experimental"
+    edsName = "eds_experimental"
+)
+
+```
+
+### Notify CDS balancer
+
+In `b.bg.UpdateClientConnState()`, which is actually `BalancerGroup.UpdateClientConnState()`:
+
+- `bg.idToBalancerConfig` is `map[string]*subBalancerWrapper`, which is initialized in `Add()` method.
+- If the `bg.idToBalancerConfig[id]` exist, calls `config.updateClientConnState()`, which is actually `subBalancerWrapper.updateClientConnState()`.
+
+In `updateClientConnState()`,
+
+- `sbc.ccState` is assigned the value of `balancer.ClientConnState` parameter.
+- `b.UpdateClientConnState()` is called with the same parameter. In our case, it's actually `cdsBalancer.UpdateClientConnState()`.
+
+In `UpdateClientConnState()`,
+
+- `state.BalancerConfig.(*lbConfig)` is `{ "cluster": "cluster_1"}` in our case.
+- The `lbCfg.ClusterName` is `"cluster_1"`
+- calls `b.updateCh.Put()` with parameter `&ccUpdate{clusterName: lbCfg.ClusterName}`
+
+Now, We created and initialized cluster manager and created CDS balancer and notify it the cluster name need to be updated.
+
+```go
+// UpdateClientConnState handles ClientState (including balancer config and
+// addresses) from resolver. It finds the balancer and forwards the update.
+func (bg *BalancerGroup) UpdateClientConnState(id string, s balancer.ClientConnState) error {
+    bg.outgoingMu.Lock()
+    defer bg.outgoingMu.Unlock()
+    if config, ok := bg.idToBalancerConfig[id]; ok {
+        return config.updateClientConnState(s)
+    }
+    return nil
+}
+
+func (sbc *subBalancerWrapper) updateClientConnState(s balancer.ClientConnState) error {
+    sbc.ccState = &s
+    b := sbc.balancer
+    if b == nil {
+        // This sub-balancer was closed. This should never happen because
+        // sub-balancers are closed when the locality is removed from EDS, or
+        // the balancer group is closed. There should be no further address
+        // updates when either of this happened.
+        //
+        // This will be a common case with priority support, because a
+        // sub-balancer (and the whole balancer group) could be closed because
+        // it's the lower priority, but it can still get address updates.
+        return nil
+    }
+    return b.UpdateClientConnState(s)
+}
+
+// UpdateClientConnState receives the serviceConfig (which contains the
+// clusterName to watch for in CDS) and the xdsClient object from the
+// xdsResolver.
+func (b *cdsBalancer) UpdateClientConnState(state balancer.ClientConnState) error {
+    if b.closed.HasFired() {
+        b.logger.Warningf("xds: received ClientConnState {%+v} after cdsBalancer was closed", state)
+        return errBalancerClosed
+    }
+
+    b.logger.Infof("Received update from resolver, balancer config: %+v", state.BalancerConfig)
+    // The errors checked here should ideally never happen because the
+    // ServiceConfig in this case is prepared by the xdsResolver and is not
+    // something that is received on the wire.
+    lbCfg, ok := state.BalancerConfig.(*lbConfig)
+    if !ok {
+        b.logger.Warningf("xds: unexpected LoadBalancingConfig type: %T", state.BalancerConfig)
+        return balancer.ErrBadResolverState
+    }
+    if lbCfg.ClusterName == "" {
+        b.logger.Warningf("xds: no clusterName found in LoadBalancingConfig: %+v", lbCfg)
+        return balancer.ErrBadResolverState
+    }
+    b.updateCh.Put(&ccUpdate{clusterName: lbCfg.ClusterName})
+    return nil
+}
+
+```

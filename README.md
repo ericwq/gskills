@@ -34,7 +34,7 @@ Get a quick glimpse from the following diagram. See  [Balancer and Resolver API]
 
 ### [xDS protocol support](docs/xds.md)
 
-### [Load Balancing - xDS](docs/lbxds.md)
+### [Load Balancing - xDS](docs/cds.md)
 
 ## Reading material
 
