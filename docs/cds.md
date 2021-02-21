@@ -767,7 +767,7 @@ In `UpdateClientConnState()`,
 - The `lbCfg.ClusterName` is `"cluster_1"`
 - calls `b.updateCh.Put()` with parameter `&ccUpdate{clusterName: lbCfg.ClusterName}`
 
-Now, We created and initialized cluster manager and created CDS balancer and notify it the cluster name need to be updated.
+Now, We created and initialized cluster manager and created CDS balancer and notify it the cluster name need to be updated. Please read [Initialize EDS balancer](eds.md) for the next stage process.
 
 ```go
 // UpdateClientConnState handles ClientState (including balancer config and
