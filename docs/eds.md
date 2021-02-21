@@ -4,6 +4,7 @@
   - [Send CDS request](#send-cds-request)
   - [Process CDS response](#process-cds-response)
   - [CDS callback](#cds-callback)
+  - [Create EDS balancer](#create-eds-balancer)
 
 In the previous article [Initialize CDS balancer](cds.md#initialize-cds-balancer), we discussed how to initialize CDS balancer and the cluster manager. In this article we will discuss the CDS balancer and CDS request. Load Balancing in xDS is a powerful, flexible and complex tool. There will be more articles to discuss this topic.
 
@@ -154,7 +155,7 @@ func (b *cdsBalancer) handleClusterUpdate(cu xdsclient.ClusterUpdate, err error)
   - `validateCluster()` checks that the `eds_config` field of [eds_cluster_config](https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/cluster/v3/cluster.proto#envoy-v3-api-msg-config-cluster-v3-cluster-edsclusterconfig) may has a optional `service_name`. That name is used as the `ServiceName` in `ClusterUpdate`.
   - `validateCluster()` checks that the `lrs_server` field is set. If set, the `EnableLRS` field in `ClusterUpdate` is true.
   - Please note that the `lrs_server` is not implemented at the time of writing this chapter, at least for envoy proxy.
-- If the Cluster message in the CDS response did not contain a serviceName, just use the clusterName for EDS.
+- If the Cluster message in the CDS response did not contain a `serviceName`, just use the `clusterName` for EDS.
 - `handleCDSResponse()` calls `v3c.parent.NewClusters`, which is actually `clientImpl.NewClusters()` method.
   - For each `ClusterUpdate`, `NewClusters()` checks if it exists in `c.cdsWatchers`, if it does exist, calls `wi.newUpdate()` and add it to `c.cdsCache`.
     - `wi.newUpdate()` updates the `wi.state`, stops the `wi.expiryTimer` and calls `wi.c.scheduleCallback()`.
@@ -342,5 +343,279 @@ func (b *cdsBalancer) handleClusterUpdate(cu xdsclient.ClusterUpdate, err error)
         return
     }
     b.updateCh.Put(&watchUpdate{cds: cu, err: err})
+}
+```
+
+### Create EDS balancer
+
+`cdsBalancer.run()` is waiting on the channel `b.updateCh`. Upon receives `watchUpdate` message:
+
+- `run()` calls `b.handleWatchUpdate`, which is actually `cdsBalancer.handleWatchUpdate()`.
+- `handleWatchUpdate()` calls `b.handleSecurityConfig()` to prepare for the connection with upstream server.
+- `handleWatchUpdate()` calls `client.SetMaxRequests()` to update the max requests for a service's counter.
+- `handleWatchUpdate()` calls `newEDSBalancer()` create the EDS balancer.
+  - `newEDSBalancer()` gets the builder by name `eds_experimental` and calls `builder.Build()` to build the EDS balancer.
+  - `builder.Build()` is actually `edsBalancerBuilder.Build)()`.
+    - `Build()` creates `edsBalancer` object and calls `newXDSClient()` to get the singleton `XDSClient`.
+    - `Build()` calls `newEDSBalancer()` to initializes `x.edsImpl`.
+    - `Build()` starts EDS goroutine `x.run()`.
+- `handleWatchUpdate()` calls `b.edsLB.UpdateClientConnState()` to notify the EDS balancer.
+  - `b.edsLB.UpdateClientConnState()` is actually `edsBalancer.UpdateClientConnState()`
+  - `UpdateClientConnState()` uses `ccState` as parameter, which is of type `balancer.ClientConnState`.
+  - `balancer.ClientConnState` has a field `BalancerConfig`, which uses `edsbalancer.EDSConfig` as value.
+  - `edsbalancer.EDSConfig` uses `update.cds.ServiceName` as the value of `EDSServiceName` field. `update.cds.ServiceName` gets value from CDS response.
+  - `UpdateClientConnState()` sends `ccState` message to channel `x.grpcUpdate`, which is of type `grpcUpdate chan interface{}`
+
+Now the EDS balancer is created and running. The EDS balancer also got a message on channel `x.grpcUpdate`.
+
+```go
+// handleWatchUpdate handles a watch update from the xDS Client. Good updates
+// lead to clientConn updates being invoked on the underlying edsBalancer.
+func (b *cdsBalancer) handleWatchUpdate(update *watchUpdate) {
+    if err := update.err; err != nil {
+        b.logger.Warningf("Watch error from xds-client %p: %v", b.xdsClient, err)
+        b.handleErrorFromUpdate(err, false)
+        return
+    }
+
+    b.logger.Infof("Watch update from xds-client %p, content: %+v", b.xdsClient, update.cds)
+
+    // Process the security config from the received update before building the
+    // child policy or forwarding the update to it. We do this because the child
+    // policy may try to create a new subConn inline. Processing the security
+    // configuration here and setting up the handshakeInfo will make sure that
+    // such attempts are handled properly.
+    if err := b.handleSecurityConfig(update.cds.SecurityCfg); err != nil {
+        // If the security config is invalid, for example, if the provider
+        // instance is not found in the bootstrap config, we need to put the
+        // channel in transient failure.
+        b.logger.Warningf("Invalid security config update from xds-client %p: %v", b.xdsClient, err)
+        b.handleErrorFromUpdate(err, false)
+        return
+    }
+
+    client.SetMaxRequests(update.cds.ServiceName, update.cds.MaxRequests)
+
+    // The first good update from the watch API leads to the instantiation of an
+    // edsBalancer. Further updates/errors are propagated to the existing
+    // edsBalancer.
+    if b.edsLB == nil {
+        edsLB, err := newEDSBalancer(b.ccw, b.bOpts)
+        if err != nil {
+            b.logger.Errorf("Failed to create child policy of type %s, %v", edsName, err)
+            return
+        }
+        b.edsLB = edsLB
+        b.logger.Infof("Created child policy %p of type %s", b.edsLB, edsName)
+    }
+    lbCfg := &edsbalancer.EDSConfig{EDSServiceName: update.cds.ServiceName}
+    if update.cds.EnableLRS {
+        // An empty string here indicates that the edsBalancer should use the
+        // same xDS server for load reporting as it does for EDS
+        // requests/responses.
+        lbCfg.LrsLoadReportingServerName = new(string)
+
+    }
+    ccState := balancer.ClientConnState{
+        BalancerConfig: lbCfg,
+    }
+    if err := b.edsLB.UpdateClientConnState(ccState); err != nil {
+        b.logger.Errorf("xds: edsBalancer.UpdateClientConnState(%+v) returned error: %v", ccState, err)
+    }
+}
+
+// handleSecurityConfig processes the security configuration received from the
+// management server, creates appropriate certificate provider plugins, and
+// updates the HandhakeInfo which is added as an address attribute in
+// NewSubConn() calls.
+func (b *cdsBalancer) handleSecurityConfig(config *xdsclient.SecurityConfig) error {
+    // If xdsCredentials are not in use, i.e, the user did not want to get
+    // security configuration from an xDS server, we should not be acting on the
+    // received security config here. Doing so poses a security threat.
+    if !b.xdsCredsInUse {
+        return nil
+    }
+
+    // Security config being nil is a valid case where the management server has
+    // not sent any security configuration. The xdsCredentials implementation
+    // handles this by delegating to its fallback credentials.
+    if config == nil {
+        // We need to explicitly set the fields to nil here since this might be
+        // a case of switching from a good security configuration to an empty
+        // one where fallback credentials are to be used.
+        b.xdsHI.SetRootCertProvider(nil)
+        b.xdsHI.SetIdentityCertProvider(nil)
+        b.xdsHI.SetAcceptedSANs(nil)
+        return nil
+    }
+
+    bc := b.xdsClient.BootstrapConfig()
+    if bc == nil || bc.CertProviderConfigs == nil {
+        // Bootstrap did not find any certificate provider configs, but the user
+        // has specified xdsCredentials and the management server has sent down
+        // security configuration.
+        return errors.New("xds: certificate_providers config missing in bootstrap file")
+    }
+    cpc := bc.CertProviderConfigs
+
+    // A root provider is required whether we are using TLS or mTLS.
+    rootProvider, err := buildProvider(cpc, config.RootInstanceName, config.RootCertName, false, true)
+    if err != nil {
+        return err
+    }
+
+    // The identity provider is only present when using mTLS.
+    var identityProvider certprovider.Provider
+    if name, cert := config.IdentityInstanceName, config.IdentityCertName; name != "" {
+        var err error
+        identityProvider, err = buildProvider(cpc, name, cert, true, false)
+        if err != nil {
+            return err
+        }
+    }
+
+    // Close the old providers and cache the new ones.
+    if b.cachedRoot != nil {
+        b.cachedRoot.Close()
+    }
+    if b.cachedIdentity != nil {
+        b.cachedIdentity.Close()
+    }
+    b.cachedRoot = rootProvider
+    b.cachedIdentity = identityProvider
+
+    // We set all fields here, even if some of them are nil, since they
+    // could have been non-nil earlier.
+    b.xdsHI.SetRootCertProvider(rootProvider)
+    b.xdsHI.SetIdentityCertProvider(identityProvider)
+    b.xdsHI.SetAcceptedSANs(config.AcceptedSANs)
+    return nil
+}
+
+// SetMaxRequests updates the max requests for a service's counter.
+func SetMaxRequests(serviceName string, maxRequests *uint32) {
+    src.mu.Lock()
+    defer src.mu.Unlock()
+    c, ok := src.services[serviceName]
+    if !ok {
+        c = &ServiceRequestsCounter{ServiceName: serviceName}
+        src.services[serviceName] = c
+    }
+    if maxRequests != nil {
+        c.maxRequests = *maxRequests
+    } else {
+        c.maxRequests = defaultMaxRequests
+    }
+}
+
+var (                        
+    errBalancerClosed = errors.New("cdsBalancer is closed")
+                                        
+    // newEDSBalancer is a helper function to build a new edsBalancer and will be
+    // overridden in unittests.
+    newEDSBalancer = func(cc balancer.ClientConn, opts balancer.BuildOptions) (balancer.Balancer, error) {
+        builder := balancer.Get(edsName)                                                               
+        if builder == nil { 
+            return nil, fmt.Errorf("xds: no balancer builder with name %v", edsName)
+        }
+        // We directly pass the parent clientConn to the                   
+        // underlying edsBalancer because the cdsBalancer does           
+        // not deal with subConns.                               
+        return builder.Build(cc, opts), nil
+    }                             
+    newXDSClient  = func() (xdsClientInterface, error) { return xdsclient.New() }
+    buildProvider = buildProviderFunc
+)                            
+
+type edsBalancerBuilder struct{}
+
+// Build helps implement the balancer.Builder interface.
+func (b *edsBalancerBuilder) Build(cc balancer.ClientConn, _ balancer.BuildOptions) balancer.Balancer {
+    x := &edsBalancer{
+        cc:                cc,
+        closed:            grpcsync.NewEvent(),
+        grpcUpdate:        make(chan interface{}),
+        xdsClientUpdate:   make(chan *edsUpdate),
+        childPolicyUpdate: buffer.NewUnbounded(),
+        lsw:               &loadStoreWrapper{},
+        config:            &EDSConfig{},
+    }
+    x.logger = prefixLogger(x)
+
+    client, err := newXDSClient()
+    if err != nil {
+        x.logger.Errorf("xds: failed to create xds-client: %v", err)
+        return nil
+    }
+
+    x.xdsClient = client
+    x.edsImpl = newEDSBalancer(x.cc, x.enqueueChildBalancerState, x.lsw, x.logger)
+    x.logger.Infof("Created")
+    go x.run()
+    return x
+}
+
+var (
+    newEDSBalancer = func(cc balancer.ClientConn, enqueueState func(priorityType, balancer.State), lw load.PerClusterReporter, logger *grpclog.PrefixLogger ) edsBalancerImplInterface {
+        return newEDSBalancerImpl(cc, enqueueState, lw, logger)
+    }
+    newXDSClient = func() (xdsClientInterface, error) { return xdsclient.New() }
+)
+
+// newEDSBalancerImpl create a new edsBalancerImpl.
+func newEDSBalancerImpl(cc balancer.ClientConn, enqueueState func(priorityType, balancer.State), lr load.PerClusterReporter, logger *grpclog.PrefixLogger) *edsBalancerImpl {
+    edsImpl := &edsBalancerImpl{
+        cc:                 cc,
+        logger:             logger,
+        subBalancerBuilder: balancer.Get(roundrobin.Name),
+        loadReporter:       lr,
+
+        enqueueChildBalancerStateUpdate: enqueueState,
+
+        priorityToLocalities: make(map[priorityType]*balancerGroupWithConfig),
+        priorityToState:      make(map[priorityType]*balancer.State),
+        subConnToPriority:    make(map[balancer.SubConn]priorityType),
+    }
+    // Don't start balancer group here. Start it when handling the first EDS
+    // response. Otherwise the balancer group will be started with round-robin,
+    // and if users specify a different sub-balancer, all balancers in balancer
+    // group will be closed and recreated when sub-balancer update happens.
+    return edsImpl
+}
+
+// ClientConnState describes the state of a ClientConn relevant to the
+// balancer.
+type ClientConnState struct {
+    ResolverState resolver.State
+    // The parsed load balancing configuration returned by the builder's
+    // ParseConfig method, if implemented.
+    BalancerConfig serviceconfig.LoadBalancingConfig
+}
+
+// EDSConfig represents the loadBalancingConfig section of the service config
+// for EDS balancers.
+type EDSConfig struct {                 
+    serviceconfig.LoadBalancingConfig
+    // ChildPolicy represents the load balancing config for the child   
+    // policy.                                                    
+    ChildPolicy *loadBalancingConfig                                                                   
+    // FallBackPolicy represents the load balancing config for the
+    // fallback.
+    FallBackPolicy *loadBalancingConfig                                      
+    // Name to use in EDS query.  If not present, defaults to the server   
+    // name from the target URI.                                         
+    EDSServiceName string                                        
+    // LRS server to send load reports to.  If not present, load reporting      
+    // will be disabled.  If set to the empty string, load reporting will
+    // be sent to the same server that we obtained CDS data from.
+    LrsLoadReportingServerName *string
+}                                       
+
+func (x *edsBalancer) UpdateClientConnState(s balancer.ClientConnState) error {
+    select {
+    case x.grpcUpdate <- &s:
+    case <-x.closed.Done():
+    }
+    return nil
 }
 ```
