@@ -98,6 +98,7 @@ Upon receive the `ccState` message on channel `x.grpcUpdate`, `edsBalancer.run()
   - `clientImpl.WatchEndpoints()` starts a EDS resource request: `x.edsServiceName`.
   - Please note that `edsCallback` is a anonymous function which wraps `x.handleEDSUpdate()`. You can think `edsCallback` is `edsBalancer.handleEDSUpdate`.
   - Please refer to [Communicate with xDS server](xds.md#communicate-with-xds-server) to understand how to start xDS resource request.
+  - `WatchEndpoints()` creates `watchInfo` for the specified resource and sets up the `edsCallback`.
   - `WatchEndpoints()` calls `c.watch()` to send EDS request to xDS server through `TransportHelper.send()`.
   - `TransportHelper.recv()` receives EDS response and calls `handleEDSResponse()` to pre-process the raw EDS response.
 - `handleGRPCUpdate()` calls `x.edsImpl.updateServiceRequestsCounter()` to update the service requests counter.TODO?
@@ -242,7 +243,7 @@ func (c *clientImpl) WatchEndpoints(clusterName string, cb func(EndpointsUpdate,
 - `UnmarshalEndpoints()` calls `proto.Unmarshal()` to unmarshal the `DiscoveryResponse` response.
 - Please note that the EDS resource is of type `ClusterLoadAssignment`.
 - `UnmarshalEndpoints()` calls `parseEDSRespProto()` to extract the supported fields from `ClusterLoadAssignment`.
-  - Please refer to [config.endpoint.v3.ClusterLoadAssignment](https://github.com/envoyproxy/envoy/blob/b77157803df9a1e6dff53cc616b32ddbf79f83f2/api/envoy/config/endpoint/v3/endpoint.proto#L32) to understand the meaning of the following fields.
+  - Please refer to [ClusterLoadAssignment](https://github.com/envoyproxy/envoy/blob/b77157803df9a1e6dff53cc616b32ddbf79f83f2/api/envoy/config/endpoint/v3/endpoint.proto#L32) to understand the meaning of the following fields.
   - `parseEDSRespProto()` extract the `policy.drop_overloads` to get the `DropOverload` object.
   - `DropOverload` is the configuration action to trim the overall incoming traffic to protect the upstream hosts.
   - Please note `DropOverload` is not implemented at the time of writing this chapter.
@@ -419,6 +420,142 @@ func (c *clientImpl) NewEndpoints(updates map[string]EndpointsUpdate) {
             c.logger.Debugf("EDS resource with name %v, value %+v added to cache", name, update)
             c.edsCache[name] = update
         }
+    }
+}
+```
+
+### RDS callback
+
+Now we got a message in channel `c.updateCh`, It's time to consume it. From [xDS callback](xds.md#xds-callback), we know the following process will happen:
+
+- `clientImpl.run()` calls `c.callCallback()` with the incoming `watcherInfoWithUpdate` as parameter.
+- In our case, the message's `wi.rType` field is `EndpointsResource`.
+- `callCallback()` will call `edsCallback` , which actually calls `edsBalancer.handleEDSUpdate`
+- `handleEDSUpdate()` wraps the `xdsclient.EndpointsUpdate` object into `&edsUpdate{resp: resp, err: err}` and sends `edsUpdate` to `x.xdsClientUpdate`.
+
+```go
+type edsUpdate struct {
+    resp xdsclient.EndpointsUpdate
+    err  error
+}
+
+func (x *edsBalancer) handleEDSUpdate(resp xdsclient.EndpointsUpdate, err error) {
+    select {
+    case x.xdsClientUpdate <- &edsUpdate{resp: resp, err: err}:
+    case <-x.closed.Done():
+    }
+}
+```
+
+### DO what?
+
+`edsBalancer.run()` is waiting on the channel `x.xdsClientUpdate`, Upon receives `edsUpdate` message:
+
+- `run()` calls `x.handleXDSClientUpdate()`, which is actually `edsBalancer.handleXDSClientUpdate()`.
+- `handleXDSClientUpdate()` calls `x.edsImpl.handleEDSResponse()` to do the job.
+
+```go
+func (x *edsBalancer) handleXDSClientUpdate(update *edsUpdate) {
+    if err := update.err; err != nil {
+        x.handleErrorFromUpdate(err, false)
+        return
+    }
+    x.edsImpl.handleEDSResponse(update.resp)
+}
+
+// handleEDSResponse handles the EDS response and creates/deletes localities and
+// SubConns. It also handles drops.
+//
+// HandleChildPolicy and HandleEDSResponse must be called by the same goroutine.
+func (edsImpl *edsBalancerImpl) handleEDSResponse(edsResp xdsclient.EndpointsUpdate) {
+    // TODO: Unhandled fields from EDS response:
+    //  - edsResp.GetPolicy().GetOverprovisioningFactor()
+    //  - locality.GetPriority()
+    //  - lbEndpoint.GetMetadata(): contains BNS name, send to sub-balancers
+    //    - as service config or as resolved address
+    //  - if socketAddress is not ip:port
+    //     - socketAddress.GetNamedPort(), socketAddress.GetResolverName()
+    //     - resolve endpoint's name with another resolver
+
+    // If the first EDS update is an empty update, nothing is changing from the
+    // previous update (which is the default empty value). We need to explicitly
+    // handle first update being empty, and send a transient failure picker.
+    //
+    // TODO: define Equal() on type EndpointUpdate to avoid DeepEqual. And do
+    // the same for the other types.
+    if !edsImpl.respReceived && reflect.DeepEqual(edsResp, xdsclient.EndpointsUpdate{}) {
+        edsImpl.cc.UpdateState(balancer.State{ConnectivityState: connectivity.TransientFailure, Picker: base.NewErrPicker(errAllPrioritiesRemoved)})
+    }
+    edsImpl.respReceived = true
+
+    edsImpl.updateDrops(edsResp.Drops)
+
+    // Filter out all localities with weight 0.
+    //
+    // Locality weighted load balancer can be enabled by setting an option in
+    // CDS, and the weight of each locality. Currently, without the guarantee
+    // that CDS is always sent, we assume locality weighted load balance is
+    // always enabled, and ignore all weight 0 localities.
+    //
+    // In the future, we should look at the config in CDS response and decide
+    // whether locality weight matters.
+    newLocalitiesWithPriority := make(map[priorityType][]xdsclient.Locality)
+    for _, locality := range edsResp.Localities {
+        if locality.Weight == 0 {
+            continue
+        }
+        priority := newPriorityType(locality.Priority)
+        newLocalitiesWithPriority[priority] = append(newLocalitiesWithPriority[priority], locality)
+    }
+
+    var (
+        priorityLowest  priorityType
+        priorityChanged bool
+    )
+
+    for priority, newLocalities := range newLocalitiesWithPriority {
+        if !priorityLowest.isSet() || priorityLowest.higherThan(priority) {
+            priorityLowest = priority
+        }
+
+        bgwc, ok := edsImpl.priorityToLocalities[priority]
+        if !ok {
+            // Create balancer group if it's never created (this is the first
+            // time this priority is received). We don't start it here. It may
+            // be started when necessary (e.g. when higher is down, or if it's a
+            // new lowest priority).
+            ccPriorityWrapper := edsImpl.ccWrapperWithPriority(priority)
+            stateAggregator := weightedaggregator.New(ccPriorityWrapper, edsImpl.logger, newRandomWRR)
+            bgwc = &balancerGroupWithConfig{
+                bg:              balancergroup.New(ccPriorityWrapper, stateAggregator, edsImpl.loadReporter, edsImpl.logger),
+                stateAggregator: stateAggregator,
+                configs:         make(map[internal.LocalityID]*localityConfig),
+            }
+            edsImpl.priorityToLocalities[priority] = bgwc
+            priorityChanged = true
+            edsImpl.logger.Infof("New priority %v added", priority)
+        }
+        edsImpl.handleEDSResponsePerPriority(bgwc, newLocalities)
+    }
+    edsImpl.priorityLowest = priorityLowest
+
+    // Delete priorities that are removed in the latest response, and also close
+    // the balancer group.
+    for p, bgwc := range edsImpl.priorityToLocalities {
+        if _, ok := newLocalitiesWithPriority[p]; !ok {
+            delete(edsImpl.priorityToLocalities, p)
+            bgwc.bg.Close()
+            delete(edsImpl.priorityToState, p)
+            priorityChanged = true
+            edsImpl.logger.Infof("Priority %v deleted", p)
+        }
+    }
+
+    // If priority was added/removed, it may affect the balancer group to use.
+    // E.g. priorityInUse was removed, or all priorities are down, and a new
+    // lower priority was added.
+    if priorityChanged {
+        edsImpl.handlePriorityChange()
     }
 }
 
