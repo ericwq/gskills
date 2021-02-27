@@ -4,6 +4,8 @@
   - [Incoming message](#incoming-message)
   - [Send EDS request](#send-eds-request)
   - [Process EDS response](#process-eds-response)
+  - [EDS callback](#eds-callback)
+  - [Process EDS update](#process-eds-update)
 
 In the previous article [Initialize EDS balancer](eds.md#initialize-eds-balancer), we discussed how to initialize EDS balancer. In this article we will discuss the EDS balancer and EDS request. Load Balancing in xDS is a powerful, flexible and complex tool. This should be the last article for this topic.
 
@@ -424,7 +426,7 @@ func (c *clientImpl) NewEndpoints(updates map[string]EndpointsUpdate) {
 }
 ```
 
-### RDS callback
+### EDS callback
 
 Now we got a message in channel `c.updateCh`, It's time to consume it. From [xDS callback](xds.md#xds-callback), we know the following process will happen:
 
@@ -432,6 +434,8 @@ Now we got a message in channel `c.updateCh`, It's time to consume it. From [xDS
 - In our case, the message's `wi.rType` field is `EndpointsResource`.
 - `callCallback()` will call `edsCallback` , which actually calls `edsBalancer.handleEDSUpdate`
 - `handleEDSUpdate()` wraps the `xdsclient.EndpointsUpdate` object into `&edsUpdate{resp: resp, err: err}` and sends `edsUpdate` to `x.xdsClientUpdate`.
+
+Now, `EndpointsUpdate` has been wrapped into `edsUpdate`, `edsUpdate` has been send to EDS balancer.
 
 ```go
 type edsUpdate struct {
@@ -447,12 +451,23 @@ func (x *edsBalancer) handleEDSUpdate(resp xdsclient.EndpointsUpdate, err error)
 }
 ```
 
-### DO what?
+### Process EDS update
 
 `edsBalancer.run()` is waiting on the channel `x.xdsClientUpdate`, Upon receives `edsUpdate` message:
 
 - `run()` calls `x.handleXDSClientUpdate()`, which is actually `edsBalancer.handleXDSClientUpdate()`.
 - `handleXDSClientUpdate()` calls `x.edsImpl.handleEDSResponse()` to do the job.
+- `handleEDSResponse()` filters out all localities with weight `0`.
+- `handleEDSResponse()` re-orders the locality by priority.
+- `handleEDSResponse()` finds the lowest priority.
+- For each priority, `handleXDSClientUpdate()` creates a `bgwc`, which is of type `balancerGroupWithConfig`.
+  - The `bg.cc` field of `balancerGroupWithConfig` is `edsBalancerWrapperCC`.
+  - The `stateAggregator` field of  `balancerGroupWithConfig` is `weightedaggregator.Aggregator`.
+- For each priority, `handleXDSClientUpdate()` calls `edsImpl.handleEDSResponsePerPriority()` to initialize the connection with endpoint.
+- `handleXDSClientUpdate()` deletes priorities that are removed in the latest response, and also closes the `bgwc`.
+- If priority was added/removed, `handleXDSClientUpdate()` calls `edsImpl.handlePriorityChange()` to change the balancer group.
+
+Next, Let's discuss the behaviour of `edsImpl.handleEDSResponsePerPriority()`. Please refer to [Connect to upstream server](connup.md) for detail.
 
 ```go
 func (x *edsBalancer) handleXDSClientUpdate(update *edsUpdate) {
@@ -558,5 +573,4 @@ func (edsImpl *edsBalancerImpl) handleEDSResponse(edsResp xdsclient.EndpointsUpd
         edsImpl.handlePriorityChange()
     }
 }
-
 ```
