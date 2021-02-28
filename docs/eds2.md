@@ -464,8 +464,8 @@ func (x *edsBalancer) handleEDSUpdate(resp xdsclient.EndpointsUpdate, err error)
   - The `bg.cc` field of `balancerGroupWithConfig` is `edsBalancerWrapperCC`.
   - The `stateAggregator` field of  `balancerGroupWithConfig` is `weightedaggregator.Aggregator`.
 - For each priority, `handleXDSClientUpdate()` calls `edsImpl.handleEDSResponsePerPriority()` to initialize the connection with endpoint.
-- `handleXDSClientUpdate()` deletes priorities that are removed in the latest response, and also closes the `bgwc`.
-- If priority was added/removed, `handleXDSClientUpdate()` calls `edsImpl.handlePriorityChange()` to change the balancer group.
+- `handleEDSResponse()` deletes priorities that are removed in the latest response, and also closes the `bgwc`.
+- At last, if priority was added/removed, `handleEDSResponse()` calls `edsImpl.handlePriorityChange()` to change the balancer group.
 
 Next, Let's discuss the behaviour of `edsImpl.handleEDSResponsePerPriority()`. Please refer to [the second part](connup.md) of initialize endpoints for detail.
 

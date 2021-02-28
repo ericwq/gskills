@@ -1,9 +1,40 @@
+# Load Balancing - xDS protocol
 
-# Connect to Upstream server
+- [Connect to upstream server](#connect-to-upstream-server)
+- [Add sub balancer](#add-sub-balancer)
+- [Update connection state](#update-connection-state)
+- [Prepare for the sub-connection](#prepare-for-the-sub-connection)
+- [Start connection](#start-connection)
+- [Which balancer, which `ClientConn` ?](#which-balancer-which-clientconn-)
 
-In `handleEDSResponse()`, `edsImpl.handleEDSResponsePerPriority()` is called to initialize connection?
+## Initialize endpoints
+
+This is the second part of initialize endpoints. xDS protocol is a complex protocol. Compare with `pickfirst` balancer, xDS needs more steps to connect with the upstream server. After the [Process EDS update](eds2.md#process-eds-update), we are ready to initialize endpoints by priority.
+
+In this stage, we continue the discussion of xDS protocol: initialize endpoints.  Here is the map for this stage. In this map:
+
+- Yellow box represents the important type and method/function.
+- Arrow represents the call direction and order.
+- Left red dot represents the box is a continue part from other map.
+- Right red dot represents there is a extension map for that box.
+
+![xDS protocol: 7](../images/images.015.png)
+
+### Connect to upstream server
+
+In `handleEDSResponse()`, there are some important fields need to be mentioned.
+
+- Here, `bgwc.bg` is created through calling `balancergroup.New()`. The argument for `cc balancer.ClientConn` parameter is `ccPriorityWrapper`.
+- That means `bgwc.bg.cc` field is of type `edsBalancerWrapperCC`.
+- The `stateAggregator` field of `bgwc` is of type `weightedaggregator.Aggregator`.
 
 ```go
+// handleEDSResponse handles the EDS response and creates/deletes localities and
+// SubConns. It also handles drops.
+//
+// HandleChildPolicy and HandleEDSResponse must be called by the same goroutine.
+func (edsImpl *edsBalancerImpl) handleEDSResponse(edsResp xdsclient.EndpointsUpdate) {
++-- 45 lines: TODO: Unhandled fields from EDS response:··································································································
     for priority, newLocalities := range newLocalitiesWithPriority {
         if !priorityLowest.isSet() || priorityLowest.higherThan(priority) {
             priorityLowest = priority
@@ -28,47 +59,172 @@ In `handleEDSResponse()`, `edsImpl.handleEDSResponsePerPriority()` is called to 
         }
         edsImpl.handleEDSResponsePerPriority(bgwc, newLocalities)
     }
+    edsImpl.priorityLowest = priorityLowest
++-- 16 lines: Delete priorities that are removed in the latest response, and also close··································································
+    if priorityChanged {
+        edsImpl.handlePriorityChange()
+    }
+}
+
+func (edsImpl *edsBalancerImpl) ccWrapperWithPriority(priority priorityType) *edsBalancerWrapperCC {
+    return &edsBalancerWrapperCC{
+        ClientConn: edsImpl.cc,
+        priority:   priority,
+        parent:     edsImpl,
+    }
+}
+
+// New creates a new BalancerGroup. Note that the BalancerGroup
+// needs to be started to work.
+func New(cc balancer.ClientConn, stateAggregator BalancerStateAggregator, loadStore load.PerClusterReporter, logger *grpclog.PrefixLogger) *BalancerGroup {
+    return &BalancerGroup{
+        cc:        cc,
+        logger:    logger,
+        loadStore: loadStore,
+
+        stateAggregator: stateAggregator,
+
+        idToBalancerConfig: make(map[string]*subBalancerWrapper),
+        balancerCache:      cache.NewTimeoutCache(DefaultSubBalancerCloseTimeout),
+        scToSubBalancer:    make(map[balancer.SubConn]*subBalancerWrapper),
+    }
+}
 ```
 
-In `handleEDSResponsePerPriority()`, `bgwc.bg.UpdateClientConnState()` is called to forward the request to `bgwc.bg`.
+`edsImpl.handleEDSResponsePerPriority()` is called to initialize endpoints by priority. Each priority may has several endpoints.
 
+In `handleEDSResponsePerPriority()`, for each `locality`, if the `locality` doesn't exist in `bgwc.configs`, calls `bgwc.bg.Add()` to add it.
+
+- `bgwc.bg.Add()` is actually `BalancerGroup.Add()`.
+- `edsImpl.subBalancerBuilder` is the argument for the `builder balancer.Builder` parameter.
+- `lidJSON` is the JSON representation of `locality.ID`, as the argument for the `id string` parameter.
+
+Let's discuss the `BalancerGroup.Add()` first.
+
+If the `locality` is added, which means `addrsChanged = true`, `handleEDSResponsePerPriority()` calls `bgwc.bg.UpdateClientConnState()` to forward the request to `bgwc.bg`.
+
+- `bgwc.bg.UpdateClientConnState()` is actually `BalancerGroup.UpdateClientConnState()`.
 - Here, `bgwc` is the `balancerGroupWithConfig` parameter passed to `handleEDSResponsePerPriority()`.
-- `bgwc` is created in `handleEDSResponse()`.
-- `bgwc.bg` is also created in `handleEDSResponse()`.
+- `bgwc` is created in previous `handleEDSResponse()`.
+- `bgwc.bg` is also created in previous `handleEDSResponse()`. `bgwc.bg.cc` is of type `edsBalancerWrapperCC`.
+
+After the discuss of `BalancerGroup.Add()`, Let's discuss the `UpdateClientConnState()` in detail.
 
 ```go
+func (edsImpl *edsBalancerImpl) handleEDSResponsePerPriority(bgwc *balancerGroupWithConfig, newLocalities []xdsclient.Locality) {
+    // newLocalitiesSet contains all names of localities in the new EDS response
+    // for the same priority. It's used to delete localities that are removed in
+    // the new EDS response.
+    newLocalitiesSet := make(map[internal.LocalityID]struct{})
+    var rebuildStateAndPicker bool
+    for _, locality := range newLocalities {
+        // One balancer for each locality.
+
+        lid := locality.ID
+        lidJSON, err := lid.ToString()
+        if err != nil {
+            edsImpl.logger.Errorf("failed to marshal LocalityID: %#v, skipping this locality", lid)
+            continue
+        }
+        newLocalitiesSet[lid] = struct{}{}
+
+        newWeight := locality.Weight
+        var newAddrs []resolver.Address
+        for _, lbEndpoint := range locality.Endpoints {
+            // Filter out all "unhealthy" endpoints (unknown and
+            // healthy are both considered to be healthy:
+            // https://www.envoyproxy.io/docs/envoy/latest/api-v2/api/v2/core/health_check.proto#envoy-api-enum-core-healthstatus).
+            if lbEndpoint.HealthStatus != xdsclient.EndpointHealthStatusHealthy &&
+                lbEndpoint.HealthStatus != xdsclient.EndpointHealthStatusUnknown {
+                continue
+            }
+
+            address := resolver.Address{
+                Addr: lbEndpoint.Address,
+            }
+            if edsImpl.subBalancerBuilder.Name() == weightedroundrobin.Name && lbEndpoint.Weight != 0 {
+                ai := weightedroundrobin.AddrInfo{Weight: lbEndpoint.Weight}
+                address = weightedroundrobin.SetAddrInfo(address, ai)
+                // Metadata field in resolver.Address is deprecated. The
+                // attributes field should be used to specify arbitrary
+                // attributes about the address. We still need to populate the
+                // Metadata field here to allow users of this field to migrate
+                // to the new one.
+                // TODO(easwars): Remove this once all users have migrated.
+                // See https://github.com/grpc/grpc-go/issues/3563.
+                address.Metadata = &ai
+            }
+            newAddrs = append(newAddrs, address)
+        }
+        var weightChanged, addrsChanged bool
+        config, ok := bgwc.configs[lid]
+        if !ok {
+            // A new balancer, add it to balancer group and balancer map.
+            bgwc.stateAggregator.Add(lidJSON, newWeight)
+            bgwc.bg.Add(lidJSON, edsImpl.subBalancerBuilder)
+            config = &localityConfig{
+                weight: newWeight,
+            }
+            bgwc.configs[lid] = config
+
+            // weightChanged is false for new locality, because there's no need
+            // to update weight in bg.
+            addrsChanged = true
+            edsImpl.logger.Infof("New locality %v added", lid)
+        } else {
+            // Compare weight and addrs.
+            if config.weight != newWeight {
+                weightChanged = true
+            }
+            if !cmp.Equal(config.addrs, newAddrs) {
+                addrsChanged = true
+            }
+            edsImpl.logger.Infof("Locality %v updated, weightedChanged: %v, addrsChanged: %v", lid, weightChanged, addrsChanged)
+        }
+
+        if weightChanged {
+            config.weight = newWeight
+            bgwc.stateAggregator.UpdateWeight(lidJSON, newWeight)
+            rebuildStateAndPicker = true
+        }
+
         if addrsChanged {
             config.addrs = newAddrs
             bgwc.bg.UpdateClientConnState(lidJSON, balancer.ClientConnState{
                 ResolverState: resolver.State{Addresses: newAddrs},
             })
         }
-```
-
-In `BalancerGroup.UpdateClientConnState()`, `bg.idToBalancerConfig[id]` is checked, if `id` exists, then calls `config.updateClientConnState()`.
-
-- Here, `config` is of type `*subBalancerWrapper`.
-- `bg.idToBalancerConfig[id]` is created in `BalancerGroup.Add()`.
-- `config.updateClientConnState()` is actually `subBalancerWrapper.updateClientConnState()`.
-- Before we jump into `subBalancerWrapper.updateClientConnState()`, Let's figure out some key value.
-
-```go
-// UpdateClientConnState handles ClientState (including balancer config and
-// addresses) from resolver. It finds the balancer and forwards the update.
-func (bg *BalancerGroup) UpdateClientConnState(id string, s balancer.ClientConnState) error {
-    bg.outgoingMu.Lock()
-    defer bg.outgoingMu.Unlock()
-    if config, ok := bg.idToBalancerConfig[id]; ok {
-        return config.updateClientConnState(s)
     }
-    return nil
+
+    // Delete localities that are removed in the latest response.
+    for lid := range bgwc.configs {
+        lidJSON, err := lid.ToString()
+        if err != nil {
+            edsImpl.logger.Errorf("failed to marshal LocalityID: %#v, skipping this locality", lid)
+            continue
+        }
+        if _, ok := newLocalitiesSet[lid]; !ok {
+            bgwc.stateAggregator.Remove(lidJSON)
+            bgwc.bg.Remove(lidJSON)
+            delete(bgwc.configs, lid)
+            edsImpl.logger.Infof("Locality %v deleted", lid)
+            rebuildStateAndPicker = true
+        }
+    }
+
+    if rebuildStateAndPicker {
+        bgwc.stateAggregator.BuildAndUpdate()
+    }
 }
 ```
 
-`edsImpl.subBalancerBuilder` is initialized when `edsImpl` is created. It get the value from `balancer.Get(roundrobin.Name)`: the round-robin balancer builder.
+### Add sub balancer
+
+One of the parameter for `BalancerGroup.Add()` is `edsImpl.subBalancerBuilder`. `edsImpl.subBalancerBuilder` is initialized when `edsImpl` is created. It gets the value from `balancer.Get(roundrobin.Name)`: the round-robin balancer builder.
 
 - `balancer.Get(roundrobin.Name)` returns `baseBuilder` with `name` parameter as `"round_robin"`
-- That's why it is a round-robin balancer builder.
+- That's why we call it: round-robin balancer builder.
+- Which means `edsBalancerImpl.subBalancerBuilder` is of type `baseBuilder`.
 
 ```go
 // newEDSBalancerImpl create a new edsBalancerImpl.
@@ -93,16 +249,16 @@ func newEDSBalancerImpl(cc balancer.ClientConn, enqueueState func(priorityType, 
 }
 
 // Name is the name of round_robin balancer.
-const Name = "round_robin"                                                                        
-                               
-// newBuilder creates a new roundrobin balancer builder.                                
-func newBuilder() balancer.Builder {                                                               
-    return base.NewBalancerBuilder(Name, &rrPickerBuilder{}, base.Config{HealthCheck: true})
-}                           
+const Name = "round_robin"
 
-func init() {                 
-    balancer.Register(newBuilder())                           
-}                                                               
+// newBuilder creates a new roundrobin balancer builder.
+func newBuilder() balancer.Builder {
+    return base.NewBalancerBuilder(Name, &rrPickerBuilder{}, base.Config{HealthCheck: true})
+}
+
+func init() {
+    balancer.Register(newBuilder())
+}
 
 // NewBalancerBuilder returns a base balancer builder configured by the provided config.
 func NewBalancerBuilder(name string, pb PickerBuilder, config Config) balancer.Builder {
@@ -114,38 +270,11 @@ func NewBalancerBuilder(name string, pb PickerBuilder, config Config) balancer.B
 }
 ```
 
-In `handleEDSResponsePerPriority()`, `BalancerGroup.Add()` is called for every `xdsclient.Locality`.
+`BalancerGroup.Add()` creates a `subBalancerWrapper` and  calls `sbc.startBalancer()` to build and initialize the `balancer`.
 
-- `edsImpl.subBalancerBuilder` is the argument for the `builder balancer.Builder` parameter.
-- `lidJSON` is the JSON representation of `locality.ID`, as the argument for the `id string` parameter.
-
-```go
-        if !ok {
-            // A new balancer, add it to balancer group and balancer map.
-            bgwc.stateAggregator.Add(lidJSON, newWeight)
-            bgwc.bg.Add(lidJSON, edsImpl.subBalancerBuilder)
-            config = &localityConfig{
-                weight: newWeight,
-            }
-            bgwc.configs[lid] = config
-
-            // weightChanged is false for new locality, because there's no need
-            // to update weight in bg.
-            addrsChanged = true
-            edsImpl.logger.Infof("New locality %v added", lid)
-        } else {
-            // Compare weight and addrs.
-            if config.weight != newWeight {
-                weightChanged = true
-            }
-            if !cmp.Equal(config.addrs, newAddrs) {
-                addrsChanged = true
-            }
-            edsImpl.logger.Infof("Locality %v updated, weightedChanged: %v, addrsChanged: %v", lid, weightChanged, addrsChanged)
-        }
-```
-
-`BalancerGroup.Add()` calls `sbc.startBalancer()` to initialize the `balancer` field.
+- Here, the `group` field of `sbc` is assigned the value of `bg`.
+- Please note that `subBalancerWrapper.ClientConn` get the value from `bg.cc`, while `bgwc.bg.cc` is of type `edsBalancerWrapperCC`.
+- Which means `subBalancerWrapper.ClientConn` is of type `edsBalancerWrapperCC`.
 
 ```go
 // Add adds a balancer built by builder to the group, with given id.
@@ -199,8 +328,8 @@ func (bg *BalancerGroup) Add(id string, builder balancer.Builder) {
 `sbc.startBalancer()` calls `sbc.builder.Build()` to create a balancer. `sbc.builder.Build()` is actually `baseBuilder.Build()`.
 
 - `baseBuilder.Build()` returns `baseBalancer`.
-- `baseBalancer` is assigned to `sbc.balancer`.
-- Please note that `startBalancer()` uses `sbc` as the `cc ClientConn` parameter.
+- `baseBalancer` is assigned to `sbc.balancer`. Which means `sbc.balancer` is of type `baseBalancer`.
+- Please note that `startBalancer()` uses `sbc` as the `cc ClientConn` parameter, which means `baseBalancer.cc` is of type `subBalancerWrapper`.  
 
 ```go
 func (sbc *subBalancerWrapper) startBalancer() {
@@ -230,10 +359,33 @@ func (bb *baseBuilder) Build(cc balancer.ClientConn, opt balancer.BuildOptions) 
 }
 ```
 
-In `updateClientConnState()`,  `sbc.ccState` is set.
+### Update connection state
 
-- Then `b.UpdateClientConnState()` is called.  which is actually `baseBalancer.UpdateClientConnState()`.
-- `baseBalancer` has an `UpdateClientConnState` method.
+Now the `subBalancerWrapper` and `baseBalancer` pair is created for each `locality`. It's time to notify the other parts of gRPC. In `BalancerGroup.UpdateClientConnState()`,
+
+- `bg.idToBalancerConfig[id]` is checked, if `id` exists, then calls `config.updateClientConnState()`.
+- Here, `config` is of type `*subBalancerWrapper`.
+- `bg.idToBalancerConfig[id]` is created in `BalancerGroup.Add()`.
+- `config.updateClientConnState()` is actually `subBalancerWrapper.updateClientConnState()`.
+
+```go
+// UpdateClientConnState handles ClientState (including balancer config and
+// addresses) from resolver. It finds the balancer and forwards the update.
+func (bg *BalancerGroup) UpdateClientConnState(id string, s balancer.ClientConnState) error {
+    bg.outgoingMu.Lock()
+    defer bg.outgoingMu.Unlock()
+    if config, ok := bg.idToBalancerConfig[id]; ok {
+        return config.updateClientConnState(s)
+    }
+    return nil
+}
+```
+
+In `subBalancerWrapper.updateClientConnState()`,  `sbc.ccState` is set.
+
+- From the previous section, we know that `sbc.balancer` is of type `baseBalancer`.
+- When `b.UpdateClientConnState()` is called, which is actually `baseBalancer.UpdateClientConnState()`.
+- `baseBalancer` implements `UpdateClientConnState` method.
 
 ```go
 func (sbc *subBalancerWrapper) updateClientConnState(s balancer.ClientConnState) error {
@@ -254,10 +406,15 @@ func (sbc *subBalancerWrapper) updateClientConnState(s balancer.ClientConnState)
 }
 ```
 
-In `UpdateClientConnState()`, `b.cc.NewSubConn()` is actually `subBalancerWrapper.NewSubConn()`.
+In `baseBalancer.UpdateClientConnState()`, for each item in `s.ResolverState.Addresses`, `b.cc.NewSubConn()` and `sc.Connect()` is called. `UpdateClientConnState()` will creates the sub-connections with the upstream endpoints. The sub-connection is stored in `b.subConns`.
 
-- `subBalancerWrapper.NewSubConn()` calls `sbc.group.newSubConn()`.
-- `sbc.group.newSubConn()` calls `bg.cc.NewSubConn()`.
+- `b.cc` is `subBalancerWrapper`. `b.cc.NewSubConn()` is actually `subBalancerWrapper.NewSubConn()`.
+- The final return type of `b.cc.NewSubConn()` is `acBalancerWrapper`. `sc` is of type interface `SubConn`.
+- `sc.Connect()` is actually `acBalancerWrapper.Connect()`.
+
+`subBalancerWrapper.NewSubConn()` will build the necessary data structure for sub-connection. `acBalancerWrapper.Connect()` will create the transport connection.
+
+Let's first discuss `subBalancerWrapper.NewSubConn()`. `acBalancerWrapper.Connect()` needs more steps to finish the job.
 
 ```go
 func (b *baseBalancer) UpdateClientConnState(s balancer.ClientConnState) error {
@@ -305,13 +462,13 @@ func (b *baseBalancer) UpdateClientConnState(s balancer.ClientConnState) error {
             // addresses. So this is a noop if the current address is the same
             // as the old one (including attributes).
             sc.UpdateAddresses([]resolver.Address{a})
-        }               
-    }           
-    for a, sc := range b.subConns {                                      
+        }
+    }
+    for a, sc := range b.subConns {
         // a was removed by resolver.
         if _, ok := addrsSet[a]; !ok {
-            b.cc.RemoveSubConn(sc)                                    
-            delete(b.subConns, a)                                             
+            b.cc.RemoveSubConn(sc)
+            delete(b.subConns, a)
             // Keep the state of this sc in b.scStates until sc's state becomes Shutdown.
             // The entry will be deleted in UpdateSubConnState.
         }
@@ -326,7 +483,25 @@ func (b *baseBalancer) UpdateClientConnState(s balancer.ClientConnState) error {
     }
     return nil
 }
+```
 
+### Prepare for the sub-connection
+
+`subBalancerWrapper.NewSubConn()` will create the necessary data structure for the sub-connection for each endpoint address.
+
+- `subBalancerWrapper.NewSubConn()` calls `sbc.group.newSubConn()`, which is actually `BalancerGroup.newSubConn()`.
+- `BalancerGroup.newSubConn()` calls `bg.cc.NewSubConn()`. From the previous section, `bg.cc` is of type `edsBalancerWrapperCC`.
+- Which means `bg.cc.NewSubConn()` is actually `edsBalancerWrapperCC.NewSubConn()`.
+- `edsBalancerWrapperCC.NewSubConn()` calls `edsBalancerImpl.newSubConn()`.
+- `edsBalancerImpl.newSubConn()` calls `edsImpl.cc.NewSubConn()`, From the previous section, `edsImpl.cc` is of type `ccWrapper`.
+- Which means `edsImpl.cc.NewSubConn()` is actually `ccWrapper.NewSubConn()`.
+- `ccWrapper.NewSubConn()` calls `ccw.ClientConn.NewSubConn()`, `ccw.ClientConn` is of type `subBalancerWrapper`.
+- Which means `ccw.ClientConn.NewSubConn()` is actually `subBalancerWrapper.NewSubConn()`.
+- `subBalancerWrapper.NewSubConn()` calls `BalancerGroup.newSubConn()`.
+- For `BalancerGroup.newSubConn()`, this time, `bg.cc` is of type `ccBalancerWrapper`. So `BalancerGroup.newSubConn()` calls `ccBalancerWrapper.NewSubConn()`.
+- `ccBalancerWrapper.NewSubConn()` calls `ccb.cc.newAddrConn()`, which is actually `ClientConn.newAddrConn()`.
+
+```go
 // NewSubConn overrides balancer.ClientConn, so balancer group can keep track of
 // the relation between subconns and sub-balancers.
 func (sbc *subBalancerWrapper) NewSubConn(addrs []resolver.Address, opts balancer.NewSubConnOptions) (balancer.SubConn, error) {
@@ -361,4 +536,360 @@ func (bg *BalancerGroup) newSubConn(config *subBalancerWrapper, addrs []resolver
     return sc, nil
 }
 
+// edsBalancerWrapperCC implements the balancer.ClientConn API and get passed to
+// each balancer group. It contains the locality priority.
+type edsBalancerWrapperCC struct {
+    balancer.ClientConn
+    priority priorityType
+    parent   *edsBalancerImpl
+}
+
+func (ebwcc *edsBalancerWrapperCC) NewSubConn(addrs []resolver.Address, opts balancer.NewSubConnOptions) (balancer.SubConn, error) {
+    return ebwcc.parent.newSubConn(ebwcc.priority, addrs, opts)
+}
+
+func (edsImpl *edsBalancerImpl) newSubConn(priority priorityType, addrs []resolver.Address, opts balancer.NewSubConnOptions) (balancer.SubConn, error) {
+    sc, err := edsImpl.cc.NewSubConn(addrs, opts)
+    if err != nil {
+        return nil, err
+    }
+    edsImpl.subConnMu.Lock()
+    edsImpl.subConnToPriority[sc] = priority
+    edsImpl.subConnMu.Unlock()
+    return sc, nil
+}
+
+// NewSubConn intercepts NewSubConn() calls from the child policy and adds an
+// address attribute which provides all information required by the xdsCreds
+// handshaker to perform the TLS handshake.
+func (ccw *ccWrapper) NewSubConn(addrs []resolver.Address, opts balancer.NewSubConnOptions) (balancer.SubConn, error) {
+    newAddrs := make([]resolver.Address, len(addrs))
+    for i, addr := range addrs {
+        newAddrs[i] = xdsinternal.SetHandshakeInfo(addr, ccw.xdsHI)
+    }
+    return ccw.ClientConn.NewSubConn(newAddrs, opts)
+}
+
+// NewSubConn overrides balancer.ClientConn, so balancer group can keep track of  
+// the relation between subconns and sub-balancers.                        
+func (sbc *subBalancerWrapper) NewSubConn(addrs []resolver.Address, opts balancer.NewSubConnOptions) (balancer.SubConn, error) {
+        return sbc.group.newSubConn(sbc, addrs, opts)
+}
+
+func (ccb *ccBalancerWrapper) NewSubConn(addrs []resolver.Address, opts balancer.NewSubConnOptions) (balancer.SubConn, error) {
+    if len(addrs) <= 0 {
+        return nil, fmt.Errorf("grpc: cannot create SubConn with empty address list")
+    }
+    ccb.mu.Lock()
+    defer ccb.mu.Unlock()
+    if ccb.subConns == nil {
+        return nil, fmt.Errorf("grpc: ClientConn balancer wrapper was closed")
+    }
+    ac, err := ccb.cc.newAddrConn(addrs, opts)
+    if err != nil {
+        return nil, err
+    }
+    acbw := &acBalancerWrapper{ac: ac}
+    acbw.ac.mu.Lock()
+    ac.acbw = acbw
+    acbw.ac.mu.Unlock()
+    ccb.subConns[acbw] = struct{}{}
+    return acbw, nil
+}
+
+// newAddrConn creates an addrConn for addrs and adds it to cc.conns.
+//
+// Caller needs to make sure len(addrs) > 0.
+func (cc *ClientConn) newAddrConn(addrs []resolver.Address, opts balancer.NewSubConnOptions) (*addrConn, error) {
+    ac := &addrConn{
+        state:        connectivity.Idle,
+        cc:           cc,
+        addrs:        addrs,
+        scopts:       opts,
+        dopts:        cc.dopts,
+        czData:       new(channelzData),
+        resetBackoff: make(chan struct{}),
+    }
+    ac.ctx, ac.cancel = context.WithCancel(cc.ctx)
+    // Track ac in cc. This needs to be done before any getTransport(...) is called.
+    cc.mu.Lock()
+    if cc.conns == nil {
+        cc.mu.Unlock()
+        return nil, ErrClientConnClosing
+    }
+    if channelz.IsOn() {
+        ac.channelzID = channelz.RegisterSubChannel(ac, cc.channelzID, "")
+        channelz.AddTraceEvent(logger, ac.channelzID, 0, &channelz.TraceEventDesc{
+            Desc:     "Subchannel Created",
+            Severity: channelz.CtInfo,
+            Parent: &channelz.TraceEventDesc{
+                Desc:     fmt.Sprintf("Subchannel(id:%d) created", ac.channelzID),
+                Severity: channelz.CtInfo,
+            },
+        })
+    }
+    cc.conns[ac] = struct{}{}
+    cc.mu.Unlock()
+    return ac, nil
+}
 ```
+
+### Start connection
+
+`acBalancerWrapper.Connect()` is the real connection with the endpoint. Generally, the process is similar with [Dial process part I](dial.md#dial-process-part-i).
+
+- `acBalancerWrapper.Connect()` calls `acbw.ac.connect()`, which is actually `addrConn.connect()`
+- There is a dedicated article about `addrConn.connect()`. See [endpoint connect](connup2.md) for detail.
+
+```go
+func (acbw *acBalancerWrapper) Connect() {
+    acbw.mu.Lock()
+    defer acbw.mu.Unlock()
+    acbw.ac.connect()
+}
+
+// connect starts creating a transport.
+// It does nothing if the ac is not IDLE.
+// TODO(bar) Move this to the addrConn section.
+func (ac *addrConn) connect() error {
+    ac.mu.Lock()
+    if ac.state == connectivity.Shutdown {
+        ac.mu.Unlock()
+        return errConnClosing
+    }
+    if ac.state != connectivity.Idle {
+        ac.mu.Unlock()
+        return nil
+    }
+    // Update connectivity state within the lock to prevent subsequent or
+    // concurrent calls from resetting the transport more than once.
+    ac.updateConnectivityState(connectivity.Connecting, nil)
+    ac.mu.Unlock()
+
+    // Start a goroutine connecting to the server asynchronously.
+    go ac.resetTransport()
+    return nil
+}
+```
+
+### Which balancer, which `ClientConn` ?
+
+Before we continue the discussion of `acBalancerWrapper.Connect()`, let's find out some key value of balancer and `ClientConn`/`cc`. If you understand the value of them, it will be easier to understand the following code.
+
+- In `ClientConn.switchBalancer()`, `newCCBalancerWrapper()` is called to create `ccBalancerWrapper`.
+  - `ccBalancerWrapper.cc` is of type `ClientConn`.
+  - In `newCCBalancerWrapper()`, `b.Build()` uses `ccb` as `cc balancer.ClientConn` parameter, `ccb` is of type `ccBalancerWrapper`.
+  - In `newCCBalancerWrapper()`, `b.Build()` is actually `builder.Build()`. It's the balancer cluster manager.
+    - In `builder.Build()`, `b.bg` is of type `BalancerGroup`.
+    - In `balancergroup.New()`, `b.bg.cc` is of type `ccBalancerWrapper`.
+
+```go
+func newCCBalancerWrapper(cc *ClientConn, b balancer.Builder, bopts balancer.BuildOptions) *ccBalancerWrapper {
+    ccb := &ccBalancerWrapper{
+        cc:       cc,
+        scBuffer: buffer.NewUnbounded(),
+        done:     grpcsync.NewEvent(),
+        subConns: make(map[*acBalancerWrapper]struct{}),
+    }
+    go ccb.watcher()
+    ccb.balancer = b.Build(ccb, bopts)
+    return ccb
+}
+
+type builder struct{}
+
+func (builder) Build(cc balancer.ClientConn, _ balancer.BuildOptions) balancer.Balancer {
+    b := &bal{}
+    b.logger = prefixLogger(b)
+    b.stateAggregator = newBalancerStateAggregator(cc, b.logger)
+    b.stateAggregator.start()
+    b.bg = balancergroup.New(cc, b.stateAggregator, nil, b.logger)
+    b.bg.Start()
+    b.logger.Infof("Created")
+    return b
+}
+
+func (builder) Name() string {
+    return balancerName
+}
+
+func (builder) ParseConfig(c json.RawMessage) (serviceconfig.LoadBalancingConfig, error) {
+    return parseConfig(c)
+}
+
+// New creates a new BalancerGroup. Note that the BalancerGroup
+// needs to be started to work.
+func New(cc balancer.ClientConn, stateAggregator BalancerStateAggregator, loadStore load.PerClusterReporter, logger *grpclog.PrefixLogger) *BalancerGroup {
+    return &BalancerGroup{
+        cc:        cc,
+        logger:    logger,
+        loadStore: loadStore,
+
+        stateAggregator: stateAggregator,
+
+        idToBalancerConfig: make(map[string]*subBalancerWrapper),
+        balancerCache:      cache.NewTimeoutCache(DefaultSubBalancerCloseTimeout),
+        scToSubBalancer:    make(map[balancer.SubConn]*subBalancerWrapper),
+    }
+}
+```
+
+For CDS balancer, in `bal.updateChildren()`, `b.bg.Add()` is called to add CDS sub-balancers to the group.
+
+- Please note there exists two balancer group. CDS balancer group and endpoints balancer group.
+- The CDS balancer builder is get from the `lbConfig`. Checks `balancer.Get(newT.ChildPolicy.Name)`.
+
+```go
+func (b *bal) updateChildren(s balancer.ClientConnState, newConfig *lbConfig) {
+    update := false
+    addressesSplit := hierarchy.Group(s.ResolverState.Addresses)
+
+    // Remove sub-pickers and sub-balancers that are not in the new cluster list.
+    for name := range b.children {
+        if _, ok := newConfig.Children[name]; !ok {
+            b.stateAggregator.remove(name)
+            b.bg.Remove(name)
+            update = true
+        }
+    }
+
+    // For sub-balancers in the new cluster list,
+    // - add to balancer group if it's new,
+    // - forward the address/balancer config update.
+    for name, newT := range newConfig.Children {
+        if _, ok := b.children[name]; !ok {
+            // If this is a new sub-balancer, add it to the picker map.
+            b.stateAggregator.add(name)
+            // Then add to the balancer group.
+            b.bg.Add(name, balancer.Get(newT.ChildPolicy.Name))
+        }
+        // TODO: handle error? How to aggregate errors and return?
+        _ = b.bg.UpdateClientConnState(name, balancer.ClientConnState{
+            ResolverState: resolver.State{
+                Addresses:     addressesSplit[name],
+                ServiceConfig: s.ResolverState.ServiceConfig,
+                Attributes:    s.ResolverState.Attributes,
+            },
+            BalancerConfig: newT.ChildPolicy.Config,
+        })
+    }
+
+    b.children = newConfig.Children
+    if update {
+        b.stateAggregator.buildAndUpdate()
+    }
+}
+```
+
+In `BalancerGroup.Add()`, `subBalancerWrapper` is created with `subBalancerWrapper.ClientConn` field set to `bg.cc`.
+
+- From the previous code, `bg.cc` is of type `ccBalancerWrapper`.
+- `Add()` calls `sbc.startBalancer()` to create CDS balancer.
+- `subBalancerWrapper.ClientConn` is `ccBalancerWrapper`
+
+```go
+// Add adds a balancer built by builder to the group, with given id.
+func (bg *BalancerGroup) Add(id string, builder balancer.Builder) {
+    // Store data in static map, and then check to see if bg is started.
+    bg.outgoingMu.Lock()
+    var sbc *subBalancerWrapper
+    // If outgoingStarted is true, search in the cache. Otherwise, cache is
+    // guaranteed to be empty, searching is unnecessary.
+    if bg.outgoingStarted {
+        if old, ok := bg.balancerCache.Remove(id); ok {
+            sbc, _ = old.(*subBalancerWrapper)
+            if sbc != nil && sbc.builder != builder {
++-- 12 lines: If the sub-balancer in cache was built with a different······························································································
+            }
+        }
+    }
+    if sbc == nil {
+        sbc = &subBalancerWrapper{
+            ClientConn: bg.cc,
+            id:         id,
+            group:      bg,
+            builder:    builder,
+        }
+        if bg.outgoingStarted {
+            // Only start the balancer if bg is started. Otherwise, we only keep the
+            // static data.
+            sbc.startBalancer()
+        }
+    } else {
+        // When brining back a sub-balancer from cache, re-send the cached
+        // picker and state.
+        sbc.updateBalancerStateWithCachedPicker()
+    }
+    bg.idToBalancerConfig[id] = sbc
+    bg.outgoingMu.Unlock()
+}
+```
+
+In `subBalancerWrapper.startBalancer()`, `sbc` is set to be the argument of `cc ClientConn` parameter.
+
+- Here, `sbc.builder` is `cdsBB`. That is the CDS balancer builder.
+- In `cdsBB.Build()`, `ccWrapper` is created and the `ccWrapper.ClientConn` field is set to `subBalancerWrapper`.
+
+```go
+func (sbc *subBalancerWrapper) startBalancer() {
+    b := sbc.builder.Build(sbc, balancer.BuildOptions{})
+    sbc.group.logger.Infof("Created child policy %p of type %v", b, sbc.builder.Name())
+    sbc.balancer = b
+    if sbc.ccState != nil {
+        b.UpdateClientConnState(*sbc.ccState)
+    }
+}
+
+// cdsBB (short for cdsBalancerBuilder) implements the balancer.Builder
+// interface to help build a cdsBalancer.
+// It also implements the balancer.ConfigParser interface to help parse the
+// JSON service config, to be passed to the cdsBalancer.
+type cdsBB struct{}
+
+// Build creates a new CDS balancer with the ClientConn.
+func (cdsBB) Build(cc balancer.ClientConn, opts balancer.BuildOptions) balancer.Balancer {
+    b := &cdsBalancer{
+        bOpts:       opts,
+        updateCh:    buffer.NewUnbounded(),
+        closed:      grpcsync.NewEvent(),
+        cancelWatch: func() {}, // No-op at this point.
+        xdsHI:       xdsinternal.NewHandshakeInfo(nil, nil),
+    }
+    b.logger = prefixLogger((b))
+    b.logger.Infof("Created")
+
+    client, err := newXDSClient()
+    if err != nil {
+        b.logger.Errorf("failed to create xds-client: %v", err)
+        return nil
+    }
+    b.xdsClient = client
+
+    var creds credentials.TransportCredentials
+    switch {
+    case opts.DialCreds != nil:
+        creds = opts.DialCreds
+    case opts.CredsBundle != nil:
+        creds = opts.CredsBundle.TransportCredentials()
+    }
+    if xc, ok := creds.(interface{ UsesXDS() bool }); ok && xc.UsesXDS() {
+        b.xdsCredsInUse = true
+    }
+    b.logger.Infof("xDS credentials in use: %v", b.xdsCredsInUse)
+
+    b.ccw = &ccWrapper{
+        ClientConn: cc,
+        xdsHI:      b.xdsHI,
+    }
+    go b.run()
+    return b
+}
+
+// Name returns the name of balancers built by this builder.
+func (cdsBB) Name() string {
+    return cdsName
+}
+
+```
+
+
