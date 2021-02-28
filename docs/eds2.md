@@ -24,7 +24,7 @@ In this stage, we continue the discussion of xDS protocol: EDS request and respo
 - Left red dot represents the box is a continue part from other map.
 - Right red dot represents there is a extension map for that box.
 
-![xDS protocol: 4](../images/images.014.png)
+![xDS protocol: 6](../images/images.014.png)
 
 ### Incoming message
 
@@ -467,7 +467,7 @@ func (x *edsBalancer) handleEDSUpdate(resp xdsclient.EndpointsUpdate, err error)
 - `handleXDSClientUpdate()` deletes priorities that are removed in the latest response, and also closes the `bgwc`.
 - If priority was added/removed, `handleXDSClientUpdate()` calls `edsImpl.handlePriorityChange()` to change the balancer group.
 
-Next, Let's discuss the behaviour of `edsImpl.handleEDSResponsePerPriority()`. Please refer to [Connect to upstream server](connup.md) for detail.
+Next, Let's discuss the behaviour of `edsImpl.handleEDSResponsePerPriority()`. Please refer to [the second part](connup.md) of initialize endpoints for detail.
 
 ```go
 func (x *edsBalancer) handleXDSClientUpdate(update *edsUpdate) {

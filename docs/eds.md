@@ -22,7 +22,7 @@ In this stage, we continue the discussion of xDS protocol: CDS request and respo
 - Left red dot represents the box is a continue part from other map.
 - Right red dot represents there is a extension map for that box.
 
-![xDS protocol: 4](../images/images.013.png)
+![xDS protocol: 5](../images/images.013.png)
 
 ### Send CDS request
 
