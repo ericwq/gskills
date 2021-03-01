@@ -1,4 +1,4 @@
-# Load Balancing - xDS protocol
+# xDS protocol - CDS/EDS
 
 - [Initialize EDS balancer](#initialize-eds-balancer)
   - [Send CDS request](#send-cds-request)

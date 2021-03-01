@@ -1,4 +1,4 @@
-# Load Balancing - xDS protocol
+# xDS protocol - CDS/EDS
 
 - [Connect to upstream server](#connect-to-upstream-server)
 - [Add sub balancer](#add-sub-balancer)

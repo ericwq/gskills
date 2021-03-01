@@ -1,5 +1,5 @@
 
-# Load Balancing - xDS protocol
+# xDS protocol - CDS/EDS
 
 - [Initialize CDS balancer](#initialize-cds-balancer)
   - [Apply service config](#apply-service-config)
@@ -7,8 +7,29 @@
   - [Initialize balancer group](#initialize-balancer-group)
   - [Create CDS balancer](#create-cds-balancer)
   - [Notify CDS balancer](#notify-cds-balancer)
+- [Initialize EDS balancer](eds.md#initialize-eds-balancer)
+  - [Send CDS request](eds.md#send-cds-request)
+  - [Process CDS response](eds.md#process-cds-response)
+  - [CDS callback](eds.md#cds-callback)
+  - [Create EDS balancer](eds.md#create-eds-balancer)
+- [Initialize endpoints](eds2.md#initialize-endpoints)
+  - [Incoming message](eds2.md#incoming-message)
+  - [Send EDS request](eds2.md#send-eds-request)
+  - [Process EDS response](eds2.md#process-eds-response)
+  - [EDS callback](eds2.md#eds-callback)
+  - [Process EDS update](eds2.md#process-eds-update)
+  - [Connect to upstream server](connup.md#connect-to-upstream-server)
+  - [Add sub balancer](connup.md#add-sub-balancer)
+  - [Update connection state](connup.md#update-connection-state)
+  - [Prepare for the sub-connection](connup.md#prepare-for-the-sub-connection)
+  - [Start connection](connup.md#start-connection)
+  - [Which balancer, which `ClientConn` ?](connup.md#which-balancer-which-clientconn-)
+  - [Connect endpoint](connup2.md#connect-endpoint)
+  - [Update sub-connection state](connup2.md#update-sub-connection-state)
+  - [Update state](connup2.md#update-state)
+  - [Get notification](connup2.md#get-notification)
 
-In the previous article [xDS protocol support](xds.md), we discussed the xDS resolver and LDS/RDS. In this article we will discuss the xDS balancer and CDS/EDS. In my guess: RDS returns a group of cluster name based on the domain matched `Route`. The matching `path` and other matching criteria can only be performed after we receive a real RPC request. It has to postpone the CDS/EDS to that time.
+In the previous article [xDS protocol - LDS/RDS](xds.md), we discussed the xDS resolver and LDS/RDS. In this article we will discuss the xDS balancer and CDS/EDS. In my guess: RDS returns a group of cluster name based on the domain matched `Route`. The matching `path` and other matching criteria can only be performed after we receive a real RPC request. It has to postpone the CDS/EDS to that time.
 
 The following is the example service config produced by `serviceConfigJSON()`. In [Build `ServiceConfig`](xds.md#build-serviceconfig), `sendNewServiceConfig()` produces the similar service config file. You can refer to [LoadBalancingConfig JSON parsing](bconfig.md) to understand the service config file.
 

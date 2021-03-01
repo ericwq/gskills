@@ -9,7 +9,7 @@ Get a quick glimpse from the following diagram. See  [Balancer and Resolver API]
 
 ## Status
 
-- `xDS protocol support` is almost done. Next chapter is `Load Balancing - ServiceConfig`
+- `xDS protocol - LDS/RDS` and `xDS protocol - CDS/EDS` is done.
 - Plan to write `Stream dial`, `Stream request and response`.
 - `Send Request` needs review because I learn more from `Client Dial` and `Load Balancing` chapters
 - `Send Response` also need review to update the diagram
@@ -32,9 +32,9 @@ Get a quick glimpse from the following diagram. See  [Balancer and Resolver API]
 
 ### [Load Balancing - Client](docs/load.md)
 
-### [xDS protocol support](docs/xds.md)
+### [xDS protocol - LDS/RDS](docs/xds.md)
 
-### [Load Balancing - xDS](docs/cds.md)
+### [xDS protocol - CDS/EDS](docs/cds.md)
 
 ## Reading material
 

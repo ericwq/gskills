@@ -1,5 +1,5 @@
 
-# xDS protocol support
+# xDS protocol - LDS/RDS
 
 - [Protocol buffers map for xDS v3 API](#protocol-buffers-map-for-xds-v3-api)
 - [Connect with xDS Server](#connect-with-xds-server)
@@ -25,7 +25,7 @@ The gRPC team believe that Envoy proxy (actually, any data plane) is not the onl
 
 From the view of data plane API, envoy proxy is a client. gRPC is another different client, while gRPC only supports partial capability of Envoy proxy. Although they are different client with different design goal, they may share the same management server (control plane) and the same data plane API.  
 
-The following is the design document for xDS protocol support. It's a good start point to understand the code. It's not easy to understand these documents if you are not familiar with Envoy proxy. It took me several weeks to read the [Envoy document](https://www.envoyproxy.io/docs/envoy/latest/about_docs) and [xDS REST and gRPC protocol](https://www.envoyproxy.io/docs/envoy/latest/api-docs/xds_protocol) before the following documents.
+The following is the design document for xDS protocol. It's a good start point to understand the code. It's not easy to understand these documents if you are not familiar with Envoy proxy. It took me several weeks to read the [Envoy document](https://www.envoyproxy.io/docs/envoy/latest/about_docs) and [xDS REST and gRPC protocol](https://www.envoyproxy.io/docs/envoy/latest/api-docs/xds_protocol) before the following documents.
 
 - [xDS-Based Global Load Balancing](https://github.com/grpc/proposal/blob/master/A27-xds-global-load-balancing.md)
 - [Load Balancing Policy Configuration](https://github.com/grpc/proposal/blob/master/A24-lb-policy-config.md)
@@ -38,7 +38,7 @@ There are [four variants of the xDS Transport Protocol](https://www.envoyproxy.i
 
 "In the future, we may add support for the incremental ADS variant of xDS. However, we have no plans to support any non-aggregated variants of xDS, nor do we plan to support REST or filesystem subscription."
 
-For xDS protocol support, `RouteConfiguration` and `ServiceConfig` are important data structure. Envoy's [RouteConfiguration](https://github.com/envoyproxy/envoy/blob/9e83625b16851cdc7e4b0a4483b0ce07c33ba76b/api/envoy/api/v2/route.proto#L24) is different from gRPC's [ServiceConfig](https://github.com/grpc/grpc-proto/blob/master/grpc/service_config/service_config.proto). While gRPC intends to populate `ServiceConfig` with the data from `RouteConfiguration`. In brief summary:
+For xDS protocol, `RouteConfiguration` and `ServiceConfig` are important data structure. Envoy's [RouteConfiguration](https://github.com/envoyproxy/envoy/blob/9e83625b16851cdc7e4b0a4483b0ce07c33ba76b/api/envoy/api/v2/route.proto#L24) is different from gRPC's [ServiceConfig](https://github.com/grpc/grpc-proto/blob/master/grpc/service_config/service_config.proto). While gRPC intends to populate `ServiceConfig` with the data from `RouteConfiguration`. In brief summary:
 
 - Utilizes bootstrap file to create the connection with xDS server.
 - Communicates with xDS server to get the `RouteConfiguration`.
@@ -2523,7 +2523,7 @@ For xDS protocol, `DialContext()` starts the xDS resolver goroutine. At the back
 - Transform the `[]Route` into `ServiceConfig`. This chapter.
 - continue the dial process to the target RPC server. We will discuss `r.cc.UpdateState()` in next article.
 
-OK, This is the LDS/RDS part about xDS protocol support. How to use `configSelector` and `ServiceConfig` in business RPC. Please refer to [Load Balancing - xDS](cds.md).
+OK, This is the LDS/RDS part about xDS protocol. How to use `configSelector` and `ServiceConfig` in business RPC. Please refer to [Load Balancing - xDS](cds.md).
 
 ```go
 // run is a long running goroutine which blocks on receiving service updates

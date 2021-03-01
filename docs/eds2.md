@@ -1,4 +1,4 @@
-# Load Balancing - xDS protocol
+# xDS protocol - CDS/EDS
 
 - [Initialize endpoints](#initialize-endpoints)
   - [Incoming message](#incoming-message)

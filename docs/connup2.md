@@ -1,4 +1,4 @@
-# Load Balancing - xDS protocol
+# xDS protocol - CDS/EDS
 
 - [Connect endpoint](#connect-endpoint)
 - [Update sub-connection state](#update-sub-connection-state)
