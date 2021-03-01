@@ -636,10 +636,10 @@ func (cc *ClientConn) newAddrConn(addrs []resolver.Address, opts balancer.NewSub
 
 ### Start connection
 
-`acBalancerWrapper.Connect()` is the real connection with the endpoint. Generally, the process is similar with [Dial process part I](dial.md#dial-process-part-i).
+`acBalancerWrapper.Connect()` is the real connection with the endpoint. Generally, the process is similar to [Dial process part I](dial.md#dial-process-part-i).
 
 - `acBalancerWrapper.Connect()` calls `acbw.ac.connect()`, which is actually `addrConn.connect()`
-- There is a dedicated article about `addrConn.connect()`. See [endpoint connect](connup2.md) for detail.
+- There is a dedicated article about `addrConn.connect()`. See [Connect endpoint](connup2.md) for detail.
 
 ```go
 func (acbw *acBalancerWrapper) Connect() {
