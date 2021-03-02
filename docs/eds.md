@@ -33,7 +33,7 @@ Upon receive the `ccUpdate` message, `b.handleClientConnUpdate()` is called to p
 - `b.handleClientConnUpdate()` is actually `cdsBalancer.handleClientConnUpdate()`.
 - `handleClientConnUpdate()` calls `b.xdsClient.WatchCluster()` to start watching on resource name `update.clusterName`.
 - Please note that `cdsCallback` is `b.handleClusterUpdate`, which is actually `cdsBalancer.handleClusterUpdate()`.
-- Please refer to [Communicate with xDS server](xds.md#communicate-with-xds-server) to understand how to start resource watching.
+- Please refer to [Communicate with xDS server](lds.md#communicate-with-xds-server) to understand how to start resource watching.
 - `WatchCluster()` sends a CDS request to xDS server through `TransportHelper.send()`.
 - `TransportHelper.recv()` receives CDS response and calls `handleCDSResponse()` to pre-process the raw CDS response.
 
@@ -327,7 +327,7 @@ func (c *clientImpl) NewClusters(updates map[string]ClusterUpdate) {
 
 ### CDS callback
 
-Now we got a message in channel `c.updateCh`, It's time to consume it. From [xDS callback](xds.md#xds-callback), we know the following process will happen:
+Now we got a message in channel `c.updateCh`, It's time to consume it. From [xDS callback](lds.md#xds-callback), we know the following process will happen:
 
 - `clientImpl.run()` calls `c.callCallback()` with the incoming `watcherInfoWithUpdate` as parameter.
 - In our case, the message's `wi.rType` field is `ClusterResource`.

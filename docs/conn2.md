@@ -5,9 +5,11 @@
 - [Update state](#update-state)
 - [Get notification](#get-notification)
 
-## Initialize endpoints
+## Connect to upstream server
 
-This is the third article of initialize endpoints. Please see [Start connection](#start-connection) to get more background about this stage. In this stage, we continue the discussion of xDS protocol: initialize endpoints. xDS will create the transport connection with endpoint and notify the connection state to gRPC core. Here is the map for this stage. In this map:
+### Connect endpoint
+
+This is the third article of EDS processing. Please see [Start connection](conn.md#start-connection) to get more background about this stage. In this stage, we continue the discussion of xDS protocol: connect to upstream server. xDS will create the transport connection with endpoint and notify the connection state to gRPC core. Here is the map for this stage. In this map:
 
 - Yellow box represents the important type and method/function.
 - Green box represents a function run in a dedicated goroutine.
@@ -17,8 +19,6 @@ This is the third article of initialize endpoints. Please see [Start connection]
 - Right red dot represents there is a extension map for that box.
 
 ![xDS protocol: 8](../images/images.016.png)
-
-### Connect endpoint
 
 xDS endpoint connect is very similar to [Dial process part II](dial.md#dial-process-part-ii). We will not repeat the similar process. The main difference of xDS endpoint connect is how `ccBalancerWrapper.watcher()` notify xDS. We will focus on this notification, that is the key point of this article.
 

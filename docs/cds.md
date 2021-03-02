@@ -18,20 +18,20 @@
   - [Process EDS response](eds2.md#process-eds-response)
   - [EDS callback](eds2.md#eds-callback)
   - [Process EDS update](eds2.md#process-eds-update)
-  - [Connect to upstream server](connup.md#connect-to-upstream-server)
-  - [Add sub balancer](connup.md#add-sub-balancer)
-  - [Update connection state](connup.md#update-connection-state)
-  - [Prepare for the sub-connection](connup.md#prepare-for-the-sub-connection)
-  - [Start connection](connup.md#start-connection)
-  - [Which balancer, which `ClientConn` ?](connup.md#which-balancer-which-clientconn-)
-  - [Connect endpoint](connup2.md#connect-endpoint)
-  - [Update sub-connection state](connup2.md#update-sub-connection-state)
-  - [Update state](connup2.md#update-state)
-  - [Get notification](connup2.md#get-notification)
+- [Connect to upstream server](conn.md#connect-to-upstream-server)
+  - [Add sub balancer](conn.md#add-sub-balancer)
+  - [Update connection state](conn.md#update-connection-state)
+  - [Prepare for the sub-connection](conn.md#prepare-for-the-sub-connection)
+  - [Start connection](conn.md#start-connection)
+  - [Which balancer, which `ClientConn` ?](conn.md#which-balancer-which-clientconn-)
+  - [Connect endpoint](conn2.md#connect-endpoint)
+  - [Update sub-connection state](conn2.md#update-sub-connection-state)
+  - [Update state](conn2.md#update-state)
+  - [Get notification](conn2.md#get-notification)
 
-In the previous article [xDS protocol - LDS/RDS](xds.md), we discussed the xDS resolver and LDS/RDS. In this article we will discuss the xDS balancer and CDS/EDS. In my guess: RDS returns a group of cluster name based on the domain matched `Route`. The matching `path` and other matching criteria can only be performed after we receive a real RPC request. It has to postpone the CDS/EDS to that time.
+In the previous article [xDS protocol - LDS/RDS](lds.md), we discussed the xDS resolver and LDS/RDS. In this article we will discuss the xDS balancer and CDS/EDS. In my guess: RDS returns a group of cluster name based on the domain matched `Route`. The matching `path` and other matching criteria can only be performed after we receive a real RPC request. It has to postpone the CDS/EDS to that time.
 
-The following is the example service config produced by `serviceConfigJSON()`. In [Build `ServiceConfig`](xds.md#build-serviceconfig), `sendNewServiceConfig()` produces the similar service config file. You can refer to [LoadBalancingConfig JSON parsing](bconfig.md) to understand the service config file.
+The following is the example service config produced by `serviceConfigJSON()`. In [Build `ServiceConfig`](lds.md#build-serviceconfig), `sendNewServiceConfig()` produces the similar service config file. You can refer to [LoadBalancingConfig JSON parsing](bconfig.md) to understand the service config file.
 
 This example is based on [config_test.go](https://github.com/grpc/grpc-go/blob/master/xds/internal/balancer/clustermanager/config_test.go). This test version is very close to the real one.
 
@@ -170,14 +170,14 @@ I use the following go code to generate the following simple version JSON file. 
 }
 ```
 
-In [Build `ServiceConfig`](xds.md#build-serviceconfig), `r.cc.UpdateState()` will be called in `xdsResolver.sendNewServiceConfig()` once RDS response is processed. `r.cc.UpdateState()` is actually `ccResolverWrapper.UpdateState()`. The parameter of `r.cc.UpdateState()` is `resolver.State`, which is a struct, resolver uses this struct to notify the gRPC core. For xDS, `resolver.State` contains the following fields:
+In [Build `ServiceConfig`](lds.md#build-serviceconfig), `r.cc.UpdateState()` will be called in `xdsResolver.sendNewServiceConfig()` once RDS response is processed. `r.cc.UpdateState()` is actually `ccResolverWrapper.UpdateState()`. The parameter of `r.cc.UpdateState()` is `resolver.State`, which is a struct, resolver uses this struct to notify the gRPC core. For xDS, `resolver.State` contains the following fields:
 
 - The `Addresses` field: NOT used by xDS resolver.
 - The `ServiceConfig` field: `xdsResolver.sendNewServiceConfig()` builds `ServiceConfig` based on `xdsResolver.activeClusters`.
 - The `Attributes` field: `xdsResolver.sendNewServiceConfig()` sets a key/value pair in `Attributes`field.
   - The key is `"grpc.internal.resolver.configSelector"`.
   - The value is `configSelector` which is built by `xdsResolver.newConfigSelector()`.
-  - Please refer to [Build `ServiceConfig`](xds.md#build-serviceconfig) for detail.
+  - Please refer to [Build `ServiceConfig`](lds.md#build-serviceconfig) for detail.
 
 ```go
 // State contains the current Resolver state relevant to the ClientConn.

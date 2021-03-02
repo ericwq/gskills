@@ -32,7 +32,7 @@ Get a quick glimpse from the following diagram. See  [Balancer and Resolver API]
 
 ### [Load Balancing - Client](docs/load.md)
 
-### [xDS protocol - LDS/RDS](docs/xds.md)
+### [xDS protocol - LDS/RDS](docs/lds.md)
 
 ### [xDS protocol - CDS/EDS](docs/cds.md)
 

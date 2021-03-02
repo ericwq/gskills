@@ -1,17 +1,16 @@
 # xDS protocol - CDS/EDS
 
-- [Connect to upstream server](#connect-to-upstream-server)
 - [Add sub balancer](#add-sub-balancer)
 - [Update connection state](#update-connection-state)
 - [Prepare for the sub-connection](#prepare-for-the-sub-connection)
 - [Start connection](#start-connection)
 - [Which balancer, which `ClientConn` ?](#which-balancer-which-clientconn-)
 
-## Initialize endpoints
+## Connect to upstream server
 
-This is the second part of initialize endpoints. xDS protocol is a complex protocol. Compare with `pickfirst` balancer, xDS needs more steps to connect with the upstream server. After the [Process EDS update](eds2.md#process-eds-update), we are ready to initialize endpoints by priority.
+This is the second article of EDS processing. xDS protocol is a complex protocol. Compare with `pickfirst` balancer, xDS needs more steps to connect with the upstream server. After the [Process EDS update](eds2.md#process-eds-update), we are ready to initialize endpoints by priority.
 
-In this stage, we continue the discussion of xDS protocol: initialize endpoints.  Here is the map for this stage. In this map:
+In this stage, we continue the discussion of xDS protocol: connect to upstream server.  Here is the map for this stage. In this map:
 
 - Yellow box represents the important type and method/function.
 - Arrow represents the call direction and order.
@@ -19,8 +18,6 @@ In this stage, we continue the discussion of xDS protocol: initialize endpoints.
 - Right red dot represents there is a extension map for that box.
 
 ![xDS protocol: 7](../images/images.015.png)
-
-### Connect to upstream server
 
 In `handleEDSResponse()`, there are some important fields need to be mentioned.
 
@@ -639,7 +636,7 @@ func (cc *ClientConn) newAddrConn(addrs []resolver.Address, opts balancer.NewSub
 `acBalancerWrapper.Connect()` is the real connection with the endpoint. Generally, the process is similar to [Dial process part I](dial.md#dial-process-part-i).
 
 - `acBalancerWrapper.Connect()` calls `acbw.ac.connect()`, which is actually `addrConn.connect()`
-- There is a dedicated article about `addrConn.connect()`. See [Connect endpoint](connup2.md) for detail.
+- There is a dedicated article about `addrConn.connect()`. See [Connect endpoint](conn2.md) for detail.
 
 ```go
 func (acbw *acBalancerWrapper) Connect() {

@@ -99,7 +99,7 @@ Upon receive the `ccState` message on channel `x.grpcUpdate`, `edsBalancer.run()
   - `startEndpointsWatch()` calls `x.xdsClient.WatchEndpoints()`, which is actually `clientImpl.WatchEndpoints()`
   - `clientImpl.WatchEndpoints()` starts a EDS resource request: `x.edsServiceName`.
   - Please note that `edsCallback` is a anonymous function which wraps `x.handleEDSUpdate()`. You can think `edsCallback` is `edsBalancer.handleEDSUpdate`.
-  - Please refer to [Communicate with xDS server](xds.md#communicate-with-xds-server) to understand how to start xDS resource request.
+  - Please refer to [Communicate with xDS server](lds.md#communicate-with-xds-server) to understand how to start xDS resource request.
   - `WatchEndpoints()` creates `watchInfo` for the specified resource and sets up the `edsCallback`.
   - `WatchEndpoints()` calls `c.watch()` to send EDS request to xDS server through `TransportHelper.send()`.
   - `TransportHelper.recv()` receives EDS response and calls `handleEDSResponse()` to pre-process the raw EDS response.
@@ -428,7 +428,7 @@ func (c *clientImpl) NewEndpoints(updates map[string]EndpointsUpdate) {
 
 ### EDS callback
 
-Now we got a message in channel `c.updateCh`, It's time to consume it. From [xDS callback](xds.md#xds-callback), we know the following process will happen:
+Now we got a message in channel `c.updateCh`, It's time to consume it. From [xDS callback](lds.md#xds-callback), we know the following process will happen:
 
 - `clientImpl.run()` calls `c.callCallback()` with the incoming `watcherInfoWithUpdate` as parameter.
 - In our case, the message's `wi.rType` field is `EndpointsResource`.
@@ -467,7 +467,7 @@ func (x *edsBalancer) handleEDSUpdate(resp xdsclient.EndpointsUpdate, err error)
 - `handleEDSResponse()` deletes priorities that are removed in the latest response, and also closes the `bgwc`.
 - At last, if priority was added/removed, `handleEDSResponse()` calls `edsImpl.handlePriorityChange()` to change the balancer group.
 
-Next, Let's discuss the behaviour of `edsImpl.handleEDSResponsePerPriority()`. Please refer to [the second part](connup.md) of initialize endpoints for detail.
+Next, Let's discuss the behaviour of `edsImpl.handleEDSResponsePerPriority()`. Please refer to [Connect to upstream server](conn.md)  for detail.
 
 ```go
 func (x *edsBalancer) handleXDSClientUpdate(update *edsUpdate) {
