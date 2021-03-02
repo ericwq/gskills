@@ -1,9 +1,15 @@
 # xDS protocol - CDS/EDS
 
-- [Connect endpoint](#connect-endpoint)
-- [Update sub-connection state](#update-sub-connection-state)
-- [Update state](#update-state)
-- [Get notification](#get-notification)
+- [Connect to upstream server](conn.md#connect-to-upstream-server)
+  - [Add sub balancer](conn.md#add-sub-balancer)
+  - [Update connection state](conn.md#update-connection-state)
+  - [Prepare for the sub-connection](conn.md#prepare-for-the-sub-connection)
+  - [Start connection](conn.md#start-connection)
+  - [Which balancer, which `ClientConn` ?](conn.md#which-balancer-which-clientconn-)
+  - [Connect endpoint](#connect-endpoint)
+  - [Update sub-connection state](#update-sub-connection-state)
+  - [Update state](#update-state)
+  - [Get notification](#get-notification)
 
 ## Connect to upstream server
 
