@@ -13,11 +13,11 @@
   
 Let's discuss the name resolving example and load balancing example from [gRPC examples](https://github.com/grpc/grpc-go/tree/master/examples). Through this discussion, we can learn how to perform the name resolving and load balancing tasks. We can also learn load balancing related internal components of gRPC.  
 
-gRPC provides a rich set of load balancing mechanism. As Envoy becomes the de facto standard. gRPC adds the support to xDS protocol. We will discuss the xDS protocol in seperated chapter.
+gRPC provides a rich set of load balancing mechanism. As Envoy becomes the de facto standard. gRPC adds the support to xDS protocol. We will discuss the xDS protocol in separated chapter.
 
 ## Name resolving
 
-Here we will discuss `name_resolving` example. This examples shows how application can pick different name resolvers. Please read the example READEME.md before continue.
+Here we will discuss `name_resolving` example. This examples shows how application can pick different name resolvers. Please read the example `READEME.md` before continue.
 
 Please refer to the following diagram (left side) and Resolver API to understand the whole design, see [Balancer and Resolver API](dial.md#balancer-and-resolver-api) for general summary.
 
@@ -99,7 +99,7 @@ type State struct {
 
 ### exampleResolver
 
-exampleResolver is created to resolve `resolver.example.grpc.io` to `localhost:50051`.  
+`exampleResolver` is created to resolve `resolver.example.grpc.io` to `localhost:50051`.
 
 - The start point is the `init()` function. In `init()`,  `exampleResolverBuilder` is registered in resolver map `map[string]Builder`.
 - In [newCCResolverWrapper()](dial.md#newccresolverwrapper), `DialContext()` parses the `target` string and calls `getResolver()` to find the registered `resolver.Builder`.
@@ -313,7 +313,7 @@ func (d *dnsResolver) watcher() {
 
 ## Load balancing
 
-In this example, two servers will listen on `"localhost:50051"`, `"localhost:50052"` and provide the same echo service. `dial()` will connect to those two servers. RPC method call will use `round_robin` policy to pick up one server to finish the RPC call. Please note, this is client side load balancing. Client side load balancing needs client to know the backend server list in advance. In the large scale production deployment, it prefers to let the server perform the load balancing to avoid the client side load balancing.
+In this example, two servers will listen on `"localhost:50051"`, `"localhost:50052"` and provide the same echo service. `dial()` will connect to those two servers. RPC method call will use `round_robin` policy to pick up one server to finish the RPC call. Please note, this is client side load balancing. Client side load balancing needs client to know the back end server list in advance. In the large scale production deployment, it prefers to let the server perform the load balancing to avoid the client side load balancing.
 
 Here the `exampleResolver` will resolve the `lb.example.grpc.io` to address `"localhost:50051", "localhost:50052"`.  
 
@@ -446,11 +446,11 @@ func init() {
 
 `defaultServiceConfigRawJSON` is defined in `dialOptions` and used in `DialContext()`. In `DialContext()`, if  `defaultServiceConfigRawJSON` is not nil, `parseServiceConfig()` will be called to parse the json string. After successfully pared, `ClientConn.dopts.defaultServiceConfig` will be set. `defaultServiceConfig` is the golang data structure to represent the service config.
 
-Using raw json string to set the service config is weird. It's error prone and mysterious. If you read the [Service Config in gRPC](https://github.com/grpc/grpc/blob/master/doc/service_config.md) and [Service Config via DNS](https://github.com/grpc/proposal/blob/master/A2-service-configs-in-dns.md), you will know that service config was originally designed for dns resolver to return both the resolved addresses and the service config. The following quoted statement explains why we get a json string.
+Using raw JSON string to set the service config is weird. It's error prone and mysterious. If you read the [Service Config in gRPC](https://github.com/grpc/grpc/blob/master/doc/service_config.md) and [Service Config via DNS](https://github.com/grpc/proposal/blob/master/A2-service-configs-in-dns.md), you will know that service config was originally designed for dns resolver to return both the resolved addresses and the service config. The following quoted statement explains why we get a JSON string.
 
 " In DNS, the service config data (in the form documented in the previous section) will be encoded in a TXT record via the mechanism described in RFC-1464 using the attribute name grpc_config."
 
-Let's spend some time to discuss the implementation of dns resolver. It's crucial to understand why we get the `defaultServiceConfigRawJSON` and how to use it.
+Let's spend some time to discuss the implementation of DNS resolver. It's crucial to understand why we get the `defaultServiceConfigRawJSON` and how to use it.
 
 ```go
 // WithDefaultServiceConfig returns a DialOption that configures the default                                
@@ -693,13 +693,13 @@ type jsonRetryPolicy struct {
 
 ### service config and dnsResovler
 
-Let's briefly introduce how dns resolver use service config:
+Let's briefly introduce how DNS resolver use service config:
 
 - `dnsBuilder.Build()` starts a new goroutine `d.watcher()`, which actually starts `dnsResolver.watcher()`.
 - upon receive a signal sent by `dnsResolver.ResolveNow()`, `dnsResolver.watcher()` calls `d.lookup()`, which actually calls `dnsResolver.lookup()`
 - `dnsResolver.lookup()` calls `d.lookupSRV()`, `d.lookupHost()` to resolve the address and SRV record.
 - At the last step, `dnsResolver.lookup()` calls `d.lookupTXT()` to resolve and parse the TXT record.
-  - In `lookupTXT()`, `d.cc.ParseServiceConfig()` will be called to parse the json string, which actually calls `parseServiceConfig()` function.
+  - In `lookupTXT()`, `d.cc.ParseServiceConfig()` will be called to parse the JSON string, which actually calls `parseServiceConfig()` function.
 - `dnsResolver.lookup()` returns a `*resolver.State` struct, which contains both resolved addresses and service config.
 - In `dnsResolver.watcher()`, `d.cc.UpdateState()` will be called to notify the `*resolver.State` to gRPC core. Which actually calls `ccResolverWrapper.UpdateState()`.
 
@@ -707,25 +707,26 @@ Service config is defined in [service_config.go](https://github.com/grpc/grpc-go
 
 - `lbConfig`: is the service config's load balancing configuration.  
 - `MethodConfig`: contains a map for the methods in this service.  
-- `retryThrottlingPolicy`: If a retryThrottlingPolicy is provided, gRPC will automatically throttle retry attempts and hedged RPCs when the client’s ratio of failures to successes exceeds a threshold.
+- `retryThrottlingPolicy`: If a `retryThrottlingPolicy` is provided, gRPC will automatically throttle retry attempts and hedged RPC when the client’s ratio of failures to successes exceeds a threshold.
 - `healthCheckConfig`: must be set as one of the requirement to enable LB channel health check.
-- `rawJSONString`: stores service config json string that get parsed into this service config struct.
+- `rawJSONString`: stores service config JSON string that get parsed into this service config struct.
 
 If you are familiar with Envoy, all of the features can be supported by Envoy. Service config will be used by xDS protocol in the future.
 
 Now, we understand the purpose of service config. You have two ways to set service config:
 
 - set the service config via resolver
-  - for dnsResolver: the service config is stored in dns TXT record and is extracted by dnsResolver. The pared service config is stored in `resolver.State.ServiceConfig`
+  - for `dnsResolver`: the service config is stored in DNS TXT record and is extracted by `dnsResolver`. The pared service config is stored in `resolver.State.ServiceConfig`
+  - for `xdsResolver`: the service config is fetched from xDS management server. See [Build `ServiceConfig`](lds.md#build-serviceconfig) for detail.
 - set the service config through `defaultServiceConfigRawJSON` and extract it via `DialContext()`. Which is stored in `ClientConn.dopts.defaultServiceConfig`
 
 The following is the summary: Before the Envoy emerges, gRPC team plans to build a rich set of load balancing mechanism, including `grpclb` balancer, `rls` balancer, `round_robin` balancer, `pick_first` balancer. The following statement is quoted from [A27: xDS-Based Global Load Balancing](https://github.com/grpc/proposal/blob/master/A27-xds-global-load-balancing.md)
 
 "gRPC currently supports its own "grpclb" protocol for look-aside load-balancing.  However, the popular Envoy proxy uses the xDS API for many types of configuration, including load balancing, and that API is evolving into a standard that will be used to configure a variety of data plane software. In order to converge with this industry trend, gRPC will be moving from its original grpclb protocol to the new xDS protocol."
 
-Here is my point: `defaultServiceConfigRawJSON` is a short-cuts to let the gRPC core to reuse the existing service config component. This short-cuts will be reused by xDS protocol in the future. The name resolver returns the service config to the gRPC client. It's the key design of gRPC. And service config is the gRPC internal data structure.
+Here is my point: `defaultServiceConfigRawJSON` is a short-cuts to let the gRPC core to reuse the existing service config mechanism. This mechanism will be reused by xDS protocol support module. The name resolver returns the service config to the gRPC client. It's the key design of gRPC. And service config is the gRPC internal data structure.
 
-Although personaly, I thinke using raw json string to set the service config is weird. It's error prone and mysterious.
+Although personally, I think using raw JSON string to set the service config is weird. It's error prone and mysterious.
 
 Next, let's continue to discuss how to use `defaultServiceConfig`.
 
@@ -867,7 +868,7 @@ Now `defaultServiceConfig` is set. When client dials in [ClientConn.updateResolv
 
 What's the relationship between `defaultServiceConfig` and `resolver.State.ServiceConfig`? In [ClientConn.updateResolverState()](dial.md#clientconnupdateresolverstate),
 
-- If the parameter `s resolver.State`'s field `s.ServiceConfig.Config` is not nil, which means dns resolver does fill in the `ServiceConfig.Config` field.
+- If the parameter `s resolver.State`'s `s.ServiceConfig.Config` field is not nil, which means dns resolver does fill in the `ServiceConfig.Config` field.
 - `ClientConn.updateResolverState()` will use the service config to initialize the balancer.
 - The service config provided by the resolver takes the higher priority than default service config.
 - The service config provided by the resolver can be disabled by `WithDisableServiceConfig()`
@@ -1111,7 +1112,7 @@ func (pw *pickerWrapper) updatePicker(p balancer.Picker) {
 
 ### UpdateSubConnState()
 
-At Client Dial [newCCBalancerWrapper()](dial.md#newccbalancerwrapper) section, goroutine `ccb.watcher()` waiting for the incoming message to monitor the sub connection status. In `ccb.watcher()`, upon receive the `scStateUpdat`:
+At Client Dial [newCCBalancerWrapper()](dial.md#newccbalancerwrapper) section, goroutine `ccb.watcher()` is waiting for the incoming message to monitor the sub connection status. In `ccb.watcher()`, upon receive the `scStateUpdat`:
 
 - `ccb.balancer.UpdateSubConnState()` will be called, The balancer is determined by the run time value.
 - For `pick_first` balancer, `pickfirstBalancer.UpdateClientConnState()` will be called.
@@ -1124,7 +1125,7 @@ At Client Dial [newCCBalancerWrapper()](dial.md#newccbalancerwrapper) section, g
   - `b.cc.UpdateState()` will be called, which actually calls `ccBalancerWrapper.UpdateState()`
 - `ccBalancerWrapper.UpdateState()` will notify the gRPC the Connectivity state and update the `Picker`.
 
-`UpdateSubConnState()` focus on reporting the state of transport connection to the target backend server. `UpdateClientConnState()` focus on the establishing connection to the target backend server.
+`UpdateSubConnState()` focus on reporting the state of transport connection to the target backend server. `UpdateClientConnState()` focus on establishing connection to the target backend server.
 
 Now, all the real connection to the target backend server is ready and the `balancer.Picker` is ready. Let's continue the discussion of `balancer.Picker` behavior.
 
@@ -1238,7 +1239,7 @@ type pickerWrapper struct {
 
 ### newAttemptLocked()
 
-At Send request [Send Request-Headers](request.md#send-request-headers) section, `cs.newAttemptLocked()` will be called. In `cs.newAttemptLocked()`
+At [Send Request-Headers](request.md#send-request-headers) section, `cs.newAttemptLocked()` will be called. In `cs.newAttemptLocked()`
 
 - `cs.cc.getTransport` will be called, which actually calls `clientStream.newAttemptLocked()`.
 - `clientStream.newAttemptLocked()` calls `cs.cc.getTransport`, which actually calls `ClientConn.getTransport()`.

@@ -28,7 +28,7 @@ This is the third article of EDS processing. Please see [Start connection](conn.
 
 xDS endpoint connect is very similar to [Dial process part II](dial.md#dial-process-part-ii). We will not repeat the similar process. The main difference of xDS endpoint connect is how `ccBalancerWrapper.watcher()` notify xDS. We will focus on this notification, that is the key point of this article.
 
-You should remember the result of xDS endpoint connect. After the calling of `addrConn.Connect()`. `ac.resetTransport()` goroutine will run in the background and connect with the specified endpoint. The created connection is stored in `ac.transport` for later using.
+You should remember the result of xDS endpoint connect: After the calling of `addrConn.Connect()`, `ac.resetTransport()` goroutine will runs in the background (asynchronously) and connects with the specified endpoint. The established connection is stored in `ac.transport` for later using.
 
 - `ccBalancerWrapper.watcher()` is waiting on channel `ccb.scBuffer`.
 - Upon receive a message, `ccBalancerWrapper.watcher()` calls `ccb.balancer.UpdateSubConnState()` to notify xDS.
