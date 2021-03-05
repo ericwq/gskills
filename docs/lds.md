@@ -20,6 +20,7 @@
   - [Handle RDS response](#handle-rds-response)
   - [RDS callback](#rds-callback)
   - [Build `ServiceConfig`](#build-serviceconfig)
+  - [LoadBalancingConfig JSON parsing](bconfig.md)
 
 The gRPC team believe that Envoy proxy (actually, any data plane) is not the only solution for service mesh. By support xDS protocol gRPC can take the role of Envoy proxy. In general gRPC wants to build a proxy-less service mesh without data plane.  See [xDS Support in gRPC - Mark D. Roth](https://www.youtube.com/watch?v=IbcJ8kNmsrE) and [Traffic Director and gRPC—proxyless services for your service mesh](https://cloud.google.com/blog/products/networking/traffic-director-supports-proxyless-grpc).
 
@@ -2523,7 +2524,7 @@ For xDS protocol, `DialContext()` starts the xDS resolver goroutine. At the back
 - Transform the `[]Route` into `ServiceConfig`. This chapter.
 - continue the dial process to the target RPC server. We will discuss `r.cc.UpdateState()` in next article.
 
-OK, This is the LDS/RDS part about xDS protocol. How to use `configSelector` and `ServiceConfig` in business RPC. Please refer to [Load Balancing - xDS](cds.md).
+OK, This is the LDS/RDS part about xDS protocol. How to use `configSelector` and `ServiceConfig` in business RPC. Please continue to read [xDS protocol - CDS/EDS](cds.md).
 
 ```go
 // run is a long running goroutine which blocks on receiving service updates

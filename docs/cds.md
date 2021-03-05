@@ -1,6 +1,7 @@
 
 # xDS protocol - CDS/EDS
 
+- [Example Service Config](#example-service-config)
 - [Initialize CDS balancer](#initialize-cds-balancer)
   - [Apply service config](#apply-service-config)
   - [Create cluster manager](#create-cluster-manager)
@@ -30,6 +31,8 @@
   - [Get notification](conn2.md#get-notification)
 
 In the previous article [xDS protocol - LDS/RDS](lds.md), we discussed the xDS resolver and LDS/RDS. In this article we will discuss the xDS balancer and CDS/EDS. In my guess: RDS returns a group of cluster name based on the domain matched `Route`. The matching `path` and other matching criteria can only be performed after we receive a real RPC request. It has to postpone the CDS/EDS to that time.
+
+## Example Service Config
 
 The following is the example service config produced by `serviceConfigJSON()`. In [Build `ServiceConfig`](lds.md#build-serviceconfig), `sendNewServiceConfig()` produces the similar service config file. You can refer to [LoadBalancingConfig JSON parsing](bconfig.md) to understand the service config file.
 

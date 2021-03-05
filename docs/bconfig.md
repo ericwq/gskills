@@ -2,7 +2,7 @@
 
 The `LoadBalancingConfig` field in `ServiceConfig` is complex. This is a separated chapter to discuss the implementation of `LoadBalancingConfig` JSON parsing.
 
-The following is the definition of `ServiceConfig`. Note the `lbConfig` is actually the `LoadBalancingConfig`, you will see more detail later. In this chapter we will focus on the `lbConfig` field. Other fields of `ServiceConfig` will be ignored.
+The following is the definition of `ServiceConfig`. Note the `lbConfig` field is actually the `LoadBalancingConfig` in JSON, you will see more detail later. In this chapter we will focus on the `lbConfig` field. Other fields of `ServiceConfig` will be ignored.
 
 ```go
 type lbConfig struct {
@@ -76,12 +76,22 @@ type healthCheckConfig struct {
 }
 ```
 
-`parseServiceConfig()` is the main function which is called by gRPC core and resolver. In `parseServiceConfig()`,
+`parseServiceConfig()` is the main function which is called by gRPC core and resolver.
+
+- `sendNewServiceConfig()` calls `r.cc.ParseServiceConfig()`. Here `r.cc` is `ccResolverWrapper`
+- Which means `r.cc.ParseServiceConfig()` is actually `ccResolverWrapper.ParseServiceConfig()`.
+- `ccResolverWrapper.ParseServiceConfig()` calls `parseServiceConfig()` to do the job.
+
+In `parseServiceConfig()`,
 
 - `jsonSC` is used as the intermediate type to parse `ServiceConfig`.
 - The `LoadBalancingConfig` field in `jsonSC` is `internalserviceconfig.BalancerConfig`, which is a special type to parse JSON data.
-- Note the name of `LoadBalancingConfig` field, That's why I say the `lbConfig` is actually the `LoadBalancingConfig`
-- When `err := json.Unmarshal([]byte(js), &rsc)` is called, `BalancerConfig.UnmarshalJSON()` is called for `internalserviceconfig.BalancerConfig` type.
+- Note the name of `LoadBalancingConfig` field, That's why I say the `lbConfig` field is actually the `LoadBalancingConfig` in JSON.
+- Next `err := json.Unmarshal([]byte(js), &rsc)` is called,
+  - `rsc` is of type `jsonSC`.
+  - `jsonSC` has a `LoadBalancingConfig *internalserviceconfig.BalancerConfig` field.
+  - `BalancerConfig` it a struct type, which has a `UnmarshalJSON()` method.
+- According to the above information, during the `json.Unmarshal([]byte(js), &rsc)` calling, `BalancerConfig.UnmarshalJSON()` will be called for `internalserviceconfig.BalancerConfig` type.
 
 ```go
 // TODO(lyuxuan): delete this struct after cleaning up old service config implementation.
@@ -193,7 +203,7 @@ func parseServiceConfig(js string) *serviceconfig.ParseResult {
 }
 ```
 
-`BalancerConfig.UnmarshalJSON` checks the list of configuration. Each configuration is a pair of `name` and `jsonCfg`.
+`BalancerConfig.UnmarshalJSON()` checks the list of configuration. Each configuration is a pair of `name` and `jsonCfg`.
 
 - `UnmarshalJSON()` uses `name` to find the registered balancer builder.
 - The registered builder has to implement `balancer.ConfigParser` interface. `ConfigParser` interface has a `ParseConfig()` method.
@@ -201,7 +211,7 @@ func parseServiceConfig(js string) *serviceconfig.ParseResult {
 - In our discussion, the value of `name` is `xds_cluster_manager_experimental`.
 - The registered balancer builder for `xds_cluster_manager_experimental` is `bal`: cluster manager builder.
 - The `ParseConfig()` method of cluster manager builder calls `parseConfig()` function to return the `lbConfig` type.
-- Note the return type of `ParseConfig()` is `serviceconfig.LoadBalancingConfig`. `lbConfig` struct embedding `serviceconfig.LoadBalancingConfig` interface. Which means `lbConfig` struct is a `serviceconfig.LoadBalancingConfig` type.
+- Note the return type of `ParseConfig()` is `serviceconfig.LoadBalancingConfig`. `lbConfig` struct embedding `serviceconfig.LoadBalancingConfig` interface. Which means `lbConfig` struct implements `serviceconfig.LoadBalancingConfig` interface.
 
 ```go
 // BalancerConfig wraps the name and config associated with one load balancing
@@ -335,13 +345,20 @@ type ParseResult struct {
 The  `parseConfig()` function use the `lbConfig` as the target type to parse the JSON data.
 
 - The `Children` field of `lbConfig` is `map[string]childConfig`. `json.Unmarshal()` can process it as usual.
-- The `ChildPolicy` field of `childConfig` is `internalserviceconfig.BalancerConfig`, which is the same `BalancerConfig` as the `LoadBalancingConfig` field in `jsonSC`.
+- The `ChildPolicy` field of `childConfig` is `internalserviceconfig.BalancerConfig`,
+  - which is the same `BalancerConfig` as the `LoadBalancingConfig` field in `jsonSC`.
 - Remember `BalancerConfig` has a `UnmarshalJSON()` method? `UnmarshalJSON()` will be called again for the `ChildPolicy` field.
 - This time the registered balancer builder name can be either `cds_experimental` or `weighted_target_experimental`.
 - Each of these builders has their own `ParseConfig()` method.
+- The `BalancerConfig.UnmarshalJSON()` will be called recursively.
+  - `json.Unmarshal()` calls `BalancerConfig.UnmarshalJSON()`.
+  - `BalancerConfig.UnmarshalJSON()` calls `parser.ParseConfig()`.
+  - `parser.ParseConfig()` calls `json.Unmarshal()`.
+  - Each time `BalancerConfig.UnmarshalJSON()` use different builder based on JSON data.
 
 ```go
-
+// The following is the lbConfig for cluster mananger
+//
 type childConfig struct {
     // ChildPolicy is the child policy and it's config.
     ChildPolicy *internalserviceconfig.BalancerConfig
@@ -362,6 +379,8 @@ func parseConfig(c json.RawMessage) (*lbConfig, error) {
     return cfg, nil
 }
 ```
+
+JSON example data.
 
 ```json
 {
@@ -445,7 +464,7 @@ func parseConfig(c json.RawMessage) (*lbConfig, error) {
 }
 ```
 
-- CDS balancer has a `ParseConfig()` method. Which uses its own `lbConfig` to parse the JSON data.
+- CDS balancer has a `ParseConfig()` method. Which uses its own `lbConfig` type to parse the JSON data.
 - The `ClusterName` field of `lbConfig` is the name of the CDS cluster.
 - EDS balancer and weighted target balancer also use the same technique to parse it's own JSON data.
 
