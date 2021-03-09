@@ -121,7 +121,7 @@ func (cc *ClientConn) Invoke(ctx context.Context, method string, args, reply int
   - `EOS` is just the flag set in the last data frame.
 - Finally calls `cs.RecvMsg()` to receive the gRPC response.
   - `cs.RecvMsg()` is actually `clientStream.RecvMsg()`.
-  - In this chapter, we will ignore the `cs.RecvMsg()` for the time being.
+  - In this chapter, we will only touch the surface of `cs.RecvMsg()`. Our focus is the send request.
   - Please refer to [Send Response](docs/response.md) for more detail.
 
 Next, lets' discuss `newClientStream()` first.
@@ -865,7 +865,9 @@ func (t *http2Client) createHeaderFields(ctx context.Context, callHdr *CallHdr) 
 Now, we picked a connection to target server, created a stream and sent the request header. It's time to back to the [Fork road](#fork-road) and check the `cs.SendMsg()`, which is actually `clientStream.SendMsg()`.
 
 - `clientStrea.SendMsg()` calls  `prepareMsg()` to encode and compress (if required) the gRPC call request parameter to byte slice.
-- here you can see the `op` function and `cs.withRetry()` structure again.
+  - Here, we will not go deeper into the `prepareMsg()`. You need more HTTP 2 knowledge to understand it.
+  - The result of `prepareMsg()` is encoding / compressing the request parameter into frame header and frame payload slice.
+- Here you can see the `op` function and `cs.withRetry()` structure again.
   - `cs.withRetry()` is a mechanism to perform the "attempt" action with the predefined retry policy.
   - `op` is the "attempt" action.
   - `op` is a anonymous wrapper function for the `a.sendMsg()` method, where `a` is the `csAttempt` created before,
@@ -880,7 +882,7 @@ In `csAttempt.sendMsg()`,
     - `http2Client.Write()` calls `t.controlBuf.put()` to send the request parameter.
   - Now the `Length-Prefixed-Message` has been sent
 - Please note in `&transport.Options{Last: !cs.desc.ClientStreams}`, the `Last` field is true.
-- Which means this is the last frame for this stream. The `EOS` flag is set now.
+- Which means this is the last frame for this request: the `EOS` flag is set now.
 
 `t.controlBuf` deserves another chapter, see [controlBuffer, loopyWriter and framer](control.md) for detail.
 
@@ -929,6 +931,27 @@ func (cs *clientStream) SendMsg(m interface{}) (err error) {
         })
     }
     return
+}
+
+// prepareMsg returns the hdr, payload and data
+// using the compressors passed or using the
+// passed preparedmsg
+func prepareMsg(m interface{}, codec baseCodec, cp Compressor, comp encoding.Compressor) (hdr, payload, data []byte, err error) {
+    if preparedMsg, ok := m.(*PreparedMsg); ok {
+        return preparedMsg.hdr, preparedMsg.payload, preparedMsg.encodedData, nil
+    }
+    // The input interface is not a prepared msg.
+    // Marshal and Compress the data at this point
+    data, err = encode(codec, m)
+    if err != nil {
+        return nil, nil, nil, err
+    }
+    compData, err := compress(data, cp, comp)
+    if err != nil {
+        return nil, nil, nil, err
+    }
+    hdr, payload = msgHeader(data, compData)
+    return hdr, payload, data, nil
 }
 
 func (a *csAttempt) sendMsg(m interface{}, hdr, payld, data []byte) error {
@@ -988,6 +1011,20 @@ func (t *http2Client) Write(s *Stream, hdr []byte, data []byte, opts *Options) e
 
 Now the request has been sent. It's time to back to the Fork road and check the `cs.RecvMsg()`, which is actually `clientStream.RecvMsg()`.
 
+- `clientStream.RecvMsg()` calls `a.recvMsg()` to receive `recvInfo` and convert it into response type.
+- Here you can see the `op` function and `cs.withRetry()` structure again.
+  - `cs.withRetry()` is a mechanism to perform the "attempt" action with the predefined retry policy.
+  - `op` is the "attempt" action.
+  - There is an anonymous wrapper function for the `a.recvMsg()` method, where `a` is the `csAttempt`.
+    - `a.recvMsg()` is called to receive the gRPC response.
+    - `a.recvMsg()` is actually `csAttempt.recvMsg()`.
+
+In `csAttempt.recvMsg()`,
+
+- `csAttempt.recvMsg()` calls `recv()` to receive the gRPC response payload and convert it into response type.
+- `recv()` return `io.EOF` to indicates successful end of stream.
+- Here, we will not go deeper into the `recv()` . You need more HTTP 2 knowledge to understand it.
+
 ```go
 func (cs *clientStream) RecvMsg(m interface{}) error {
     if cs.binlog != nil && !cs.serverHeaderBinlogged {
@@ -1028,5 +1065,91 @@ func (cs *clientStream) RecvMsg(m interface{}) error {
         }
     }
     return err
+}
+
+func (a *csAttempt) recvMsg(m interface{}, payInfo *payloadInfo) (err error) {
+    cs := a.cs
+    if a.statsHandler != nil && payInfo == nil {
+        payInfo = &payloadInfo{}
+    }
+
+    if !a.decompSet {
+        // Block until we receive headers containing received message encoding.
+        if ct := a.s.RecvCompress(); ct != "" && ct != encoding.Identity {
+            if a.dc == nil || a.dc.Type() != ct {
+                // No configured decompressor, or it does not match the incoming
+                // message encoding; attempt to find a registered compressor that does.
+                a.dc = nil
+                a.decomp = encoding.GetCompressor(ct)
+            }
+        } else {
+            // No compression is used; disable our decompressor.
+            a.dc = nil
+        }
+        // Only initialize this state once per stream.
+        a.decompSet = true
+    }
+    err = recv(a.p, cs.codec, a.s, a.dc, m, *cs.callInfo.maxReceiveMessageSize, payInfo, a.decomp)
+    if err != nil {
+        if err == io.EOF {
+            if statusErr := a.s.Status().Err(); statusErr != nil {
+                return statusErr
+            }
+            return io.EOF // indicates successful end of stream.
+        }
+        return toRPCErr(err)
+    }
+    if a.trInfo != nil {
+        a.mu.Lock()
+        if a.trInfo.tr != nil {
+            a.trInfo.tr.LazyLog(&payload{sent: false, msg: m}, true)
+        }
+        a.mu.Unlock()
+    }
+    if a.statsHandler != nil {
+        a.statsHandler.HandleRPC(cs.ctx, &stats.InPayload{
+            Client:   true,
+            RecvTime: time.Now(),
+            Payload:  m,
+            // TODO truncate large payload.
+            Data:       payInfo.uncompressedBytes,
+            WireLength: payInfo.wireLength + headerLen,
+            Length:     len(payInfo.uncompressedBytes),
+        })
+    }
+    if channelz.IsOn() {
+        a.t.IncrMsgRecv()
+    }
+    if cs.desc.ServerStreams {
+        // Subsequent messages should be received by subsequent RecvMsg calls.
+        return nil
+    }
+    // Special handling for non-server-stream rpcs.
+    // This recv expects EOF or errors, so we don't collect inPayload.
+    err = recv(a.p, cs.codec, a.s, a.dc, m, *cs.callInfo.maxReceiveMessageSize, nil, a.decomp)
+    if err == nil {
+        return toRPCErr(errors.New("grpc: client streaming protocol violation: get <nil>, want <EOF>"))
+    }
+    if err == io.EOF {
+        return a.s.Status().Err() // non-server streaming Recv returns nil on success
+    }
+    return toRPCErr(err)
+}
+
+// For the two compressor parameters, both should not be set, but if they are,
+// dc takes precedence over compressor.
+// TODO(dfawley): wrap the old compressor/decompressor using the new API?
+func recv(p *parser, c baseCodec, s *transport.Stream, dc Decompressor, m interface{}, maxReceiveMessageSize int, payInfo *payloadInfo, compressor encoding.Compressor) error {
+    d, err := recvAndDecompress(p, s, dc, maxReceiveMessageSize, payInfo, compressor)
+    if err != nil {
+        return err
+    }
+    if err := c.Unmarshal(d, m); err != nil {
+        return status.Errorf(codes.Internal, "grpc: failed to unmarshal the received message %v", err)
+    }
+    if payInfo != nil {
+        payInfo.uncompressedBytes = d
+    }
+    return nil
 }
 ```
