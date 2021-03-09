@@ -9,9 +9,15 @@ Get a quick glimpse from the following diagram. See  [Balancer and Resolver API]
 
 ## Status
 
+Done:
+
 - `xDS protocol - LDS/RDS` and `xDS protocol - CDS/EDS` is done.
+- `Send Request` is completely rewritten.
+
+Plan:
+
+- How to choose the endpoint during RPC calling? `xDS protocol` still needs an extra article.
 - Plan to write `Stream dial`, `Stream request and response`.
-- `Send Request` needs review because I learn more from `Client Dial` and `Load Balancing` chapters
 - `Send Response` also need review to update the diagram
 
 ## Content
