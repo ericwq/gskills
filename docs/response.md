@@ -9,6 +9,10 @@
   - [Decode header](#decode-header)
   - [Server worker](#server-worker)
   - [Handle request](#handle-request)
+  - [Process unary RPC](#process-unary-rpc)
+  - [Receive method parameters](#receive-method-parameters)
+  - [Invoke service method](#invoke-service-method)
+  - [Send response header](#send-response-header)
 
 gRPC uses HTTP 2 frames to send request and process response. But how to do that exactly? Let's explain the detail of implementation of server side response. [gRPC over HTTP2](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md) is a good start point to explain the design of gRPC over HTTP 2. In brief, the gRPC response is composited by three parts:
 
@@ -335,7 +339,7 @@ func (s *Server) Serve(lis net.Listener) error {
 
 ### Prepare for stream
 
-- `handleRawConn()` calls `s.useTransportAuthenticator()` first.  
+- `handleRawConn()` calls `s.useTransportAuthenticator()` first.
   - `s.useTransportAuthenticator()` is actually `Server.useTransportAuthenticator()`
   - `Server.useTransportAuthenticator()` performs TLS handshaking.
 - `handleRawConn()` calls `s.newHTTP2Transport()`, which is actually `Server.newHTTP2Transport()`.
@@ -355,7 +359,7 @@ func (s *Server) Serve(lis net.Listener) error {
   - Please note  `s.serveStreams()` runs in a separate goroutine.
   - `s.serveStreams()` is actually `Server.serveStreams()`.
 
-For readers who are familiar with HTTP 2 protocol will find the above work is essential before accepting the client request. We will NOT show `s.newHTTP2Transport()` related code. Let's keep our focus on the request. In short , the `s.newHTTP2Transport()` prepares for processing stream.
+For readers who are familiar with HTTP 2 protocol will find the above work is essential before accepting the client request. In short , the `s.newHTTP2Transport()` prepares for processing stream.
 
 Next, let's discuss `Server.serveStreams()` in detail.
 
@@ -397,6 +401,219 @@ func (s *Server) handleRawConn(rawConn net.Conn) {
         s.serveStreams(st)
         s.removeConn(st)
     }()
+}
+
+// newHTTP2Transport sets up a http/2 transport (using the
+// gRPC http2 server transport in transport/http2_server.go).
+func (s *Server) newHTTP2Transport(c net.Conn, authInfo credentials.AuthInfo) transport.ServerTransport {
+    config := &transport.ServerConfig{
+        MaxStreams:            s.opts.maxConcurrentStreams,
+        AuthInfo:              authInfo,
+        InTapHandle:           s.opts.inTapHandle,
+        StatsHandler:          s.opts.statsHandler,
+        KeepaliveParams:       s.opts.keepaliveParams,
+        KeepalivePolicy:       s.opts.keepalivePolicy,
+        InitialWindowSize:     s.opts.initialWindowSize,
+        InitialConnWindowSize: s.opts.initialConnWindowSize,
+        WriteBufferSize:       s.opts.writeBufferSize,
+        ReadBufferSize:        s.opts.readBufferSize,
+        ChannelzParentID:      s.channelzID,
+        MaxHeaderListSize:     s.opts.maxHeaderListSize,
+        HeaderTableSize:       s.opts.headerTableSize,
+    }
+    st, err := transport.NewServerTransport("http2", c, config)
+    if err != nil {
+        s.mu.Lock()
+        s.errorf("NewServerTransport(%q) failed: %v", c.RemoteAddr(), err)
+        s.mu.Unlock()
+        c.Close()
+        channelz.Warning(logger, s.channelzID, "grpc: Server.Serve failed to create ServerTransport: ", err)
+        return nil
+    }
+
+    return st
+}
+
+// NewServerTransport creates a ServerTransport with conn or non-nil error
+// if it fails.
+func NewServerTransport(protocol string, conn net.Conn, config *ServerConfig) (ServerTransport, error) {
+    return newHTTP2Server(conn, config)
+}
+
+// newHTTP2Server constructs a ServerTransport based on HTTP2. ConnectionError is
+// returned if something goes wrong.
+func newHTTP2Server(conn net.Conn, config *ServerConfig) (_ ServerTransport, err error) {
+    writeBufSize := config.WriteBufferSize
+    readBufSize := config.ReadBufferSize
+    maxHeaderListSize := defaultServerMaxHeaderListSize
+    if config.MaxHeaderListSize != nil {
+        maxHeaderListSize = *config.MaxHeaderListSize
+    }
+    framer := newFramer(conn, writeBufSize, readBufSize, maxHeaderListSize)
+    // Send initial settings as connection preface to client.
+    isettings := []http2.Setting{{
+        ID:  http2.SettingMaxFrameSize,
+        Val: http2MaxFrameLen,
+    }}
+    // TODO(zhaoq): Have a better way to signal "no limit" because 0 is
+    // permitted in the HTTP2 spec.
+    maxStreams := config.MaxStreams
+    if maxStreams == 0 {
+        maxStreams = math.MaxUint32
+    } else {
+        isettings = append(isettings, http2.Setting{
+            ID:  http2.SettingMaxConcurrentStreams,
+            Val: maxStreams,
+        })
+    }
+    dynamicWindow := true
+    iwz := int32(initialWindowSize)
+    if config.InitialWindowSize >= defaultWindowSize {
+        iwz = config.InitialWindowSize
+        dynamicWindow = false
+    }
+    icwz := int32(initialWindowSize)
+    if config.InitialConnWindowSize >= defaultWindowSize {
+        icwz = config.InitialConnWindowSize
+        dynamicWindow = false
+    }
+    if iwz != defaultWindowSize {
+        isettings = append(isettings, http2.Setting{
+            ID:  http2.SettingInitialWindowSize,
+            Val: uint32(iwz)})
+    }
+    if config.MaxHeaderListSize != nil {
+        isettings = append(isettings, http2.Setting{
+            ID:  http2.SettingMaxHeaderListSize,
+            Val: *config.MaxHeaderListSize,
+        })
+    }
+    if config.HeaderTableSize != nil {
+        isettings = append(isettings, http2.Setting{
+            ID:  http2.SettingHeaderTableSize,
+            Val: *config.HeaderTableSize,
+        })
+    }
+    if err := framer.fr.WriteSettings(isettings...); err != nil {
+        return nil, connectionErrorf(false, err, "transport: %v", err)
+    }
+    // Adjust the connection flow control window if needed.
+    if delta := uint32(icwz - defaultWindowSize); delta > 0 {
+        if err := framer.fr.WriteWindowUpdate(0, delta); err != nil {
+            return nil, connectionErrorf(false, err, "transport: %v", err)
+        }
+    }
+    kp := config.KeepaliveParams
+    if kp.MaxConnectionIdle == 0 {
+        kp.MaxConnectionIdle = defaultMaxConnectionIdle
+    }
+    if kp.MaxConnectionAge == 0 {
+        kp.MaxConnectionAge = defaultMaxConnectionAge
+    }
+    // Add a jitter to MaxConnectionAge.
+    kp.MaxConnectionAge += getJitter(kp.MaxConnectionAge)
+    if kp.MaxConnectionAgeGrace == 0 {
+        kp.MaxConnectionAgeGrace = defaultMaxConnectionAgeGrace
+    }
+    if kp.Time == 0 {
+        kp.Time = defaultServerKeepaliveTime
+    }
+    if kp.Timeout == 0 {
+        kp.Timeout = defaultServerKeepaliveTimeout
+    }
+    kep := config.KeepalivePolicy
+    if kep.MinTime == 0 {
+        kep.MinTime = defaultKeepalivePolicyMinTime
+    }
+    done := make(chan struct{})
+    t := &http2Server{
+        ctx:               context.Background(),
+        done:              done,
+        conn:              conn,
+        remoteAddr:        conn.RemoteAddr(),
+        localAddr:         conn.LocalAddr(),
+        authInfo:          config.AuthInfo,
+        framer:            framer,
+        readerDone:        make(chan struct{}),
+        writerDone:        make(chan struct{}),
+        maxStreams:        maxStreams,
+        inTapHandle:       config.InTapHandle,
+        fc:                &trInFlow{limit: uint32(icwz)},
+        state:             reachable,
+        activeStreams:     make(map[uint32]*Stream),
+        stats:             config.StatsHandler,
+        kp:                kp,
+        idle:              time.Now(),
+        kep:               kep,
+        initialWindowSize: iwz,
+        czData:            new(channelzData),
+        bufferPool:        newBufferPool(),
+    }
+    t.controlBuf = newControlBuffer(t.done)
+    if dynamicWindow {
+        t.bdpEst = &bdpEstimator{
+            bdp:               initialWindowSize,
+            updateFlowControl: t.updateFlowControl,
+        }
+    }
+    if t.stats != nil {
+        t.ctx = t.stats.TagConn(t.ctx, &stats.ConnTagInfo{
+            RemoteAddr: t.remoteAddr,
+            LocalAddr:  t.localAddr,
+        })
+        connBegin := &stats.ConnBegin{}
+        t.stats.HandleConn(t.ctx, connBegin)
+    }
+    if channelz.IsOn() {
+        t.channelzID = channelz.RegisterNormalSocket(t, config.ChannelzParentID, fmt.Sprintf("%s -> %s", t.remoteAddr, t.localAddr))
+    }
+
+    t.connectionID = atomic.AddUint64(&serverConnectionCounter, 1)
+
+    t.framer.writer.Flush()
+
+    defer func() {
+        if err != nil {
+            t.Close()
+        }
+    }()
+
+    // Check the validity of client preface.
+    preface := make([]byte, len(clientPreface))
+    if _, err := io.ReadFull(t.conn, preface); err != nil {
+        return nil, connectionErrorf(false, err, "transport: http2Server.HandleStreams failed to receive the preface from client: %v", err)
+    }
+    if !bytes.Equal(preface, clientPreface) {
+        return nil, connectionErrorf(false, nil, "transport: http2Server.HandleStreams received bogus greeting from client: %q", preface)
+    }
+
+    frame, err := t.framer.fr.ReadFrame()
+    if err == io.EOF || err == io.ErrUnexpectedEOF {
+        return nil, err
+    }
+    if err != nil {
+        return nil, connectionErrorf(false, err, "transport: http2Server.HandleStreams failed to read initial settings frame: %v", err)
+    }
+    atomic.StoreInt64(&t.lastRead, time.Now().UnixNano())
+    sf, ok := frame.(*http2.SettingsFrame)
+    if !ok {
+        return nil, connectionErrorf(false, nil, "transport: http2Server.HandleStreams saw invalid preface type %T from client", frame)
+    }
+    t.handleSettings(sf)
+
+    go func() {
+        t.loopy = newLoopyWriter(serverSide, t.framer, t.controlBuf, t.bdpEst)
+        t.loopy.ssGoAwayHandler = t.outgoingGoAwayHandler
+        if err := t.loopy.run(); err != nil {
+            if logger.V(logLevel) {
+                logger.Errorf("transport: loopyWriter.run returning. Err: %v", err)
+            }
+        }
+        t.conn.Close()
+        close(t.writerDone)
+    }()
+    go t.keepalive()
+    return t, nil
 }
 ```
 
@@ -1043,7 +1260,7 @@ type serverWorkerData struct {
 
 ### Handle request
 
-When `operateHeaders()` create the stream from the `MetaHeadersFrame`. One important step is to decode request header from header frame.
+When `operateHeaders()` creates stream for the request, one important step is to decode request header from header frame.
 
 Here is the request header example:
 
@@ -1059,17 +1276,22 @@ grpc-encoding = gzip
 authorization = Bearer xxxxxx 
 ```
 
-In the header frame, it's the `:path` field contains the service name and method name:
+At the last step, `operateHeaders()` calls `handle()`, which indirectly calls `Server.handleStream()`. Here the value of the `:path` field is assigned to `stream.method`, now `stream.method` contains the service name and method name:
 
 ```go
 stream.method = "/helloworld.Greeter/SayHello"
 ```
 
-Please see [Send request headers](request.md#send-request-headers).
+Please refer to [Send header](request.md#send-header) to know how to set the `":path"` header filed.
 
-`handleStream()` splits `stream.Method()` into `servce` and `method`. Then it try to find the registered `methodHandler` with the specified `service="helloworld.Greeter"` and `method="SayHello"`. If success, it will find the `_Greeter_SayHello_Handler`, please refer to [Register service](#register-service) for detail.  `handleStream()` also provide a solution for unknown service and/or unknown method.
+- `handleStream()` splits `stream.Method()` into `servce` and `method`.
+- Then `handleStream()` tries to find the registered `methodHandler` with `service="helloworld.Greeter"` and `method="SayHello"` in `s.services`.
+- If success, `handleStream()` will find the `_Greeter_SayHello_Handler`. Please refer to [Register service](#register-service) for detail.  
+  - for unary RPC, `handleStream()` calls `s.processUnaryRPC()`.
+  - for stream RPC, `handleStream()` calls `s.processStreamingRPC()`.
+- If not, `handleStream()` provides a solution for unknown service and/or unknown method.
 
-for our case, `s.processUnaryRPC()` will be called next.
+Next, let's discuss `s.processUnaryRPC()` in detail.
 
 ```go
 func (s *Server) handleStream(t transport.ServerTransport, stream *transport.Stream, trInfo *traceInfo) {
@@ -1110,82 +1332,190 @@ func (s *Server) handleStream(t transport.ServerTransport, stream *transport.Str
             return
         }
     }
-    // Unknown service, or known server unknown method.           
+    // Unknown service, or known server unknown method.
     if unknownDesc := s.opts.unknownStreamDesc; unknownDesc != nil {
         s.processStreamingRPC(t, stream, nil, unknownDesc, trInfo)
-        return        
-    }                 
-    var errDesc string                                      
+        return
+    }
+    var errDesc string
     if !knownService {
-        errDesc = fmt.Sprintf("unknown service %v", service)                      
+        errDesc = fmt.Sprintf("unknown service %v", service)
     } else {
         errDesc = fmt.Sprintf("unknown method %v for service %v", method, service)
-    }                                      
-    if trInfo != nil {      
+    }
+    if trInfo != nil {
         trInfo.tr.LazyPrintf("%s", errDesc)
-        trInfo.tr.SetError()                                                               
-    }                     
+        trInfo.tr.SetError()
+    }
     if err := t.WriteStatus(stream, status.New(codes.Unimplemented, errDesc)); err != nil {
-        if trInfo != nil {      
+        if trInfo != nil {
             trInfo.tr.LazyLog(&fmtStringer{"%v", []interface{}{err}}, true)
-            trInfo.tr.SetError()                                                                            
-        }
+            trInfo.tr.SetError()
+        }processUnaryRPC
         channelz.Warningf(logger, s.channelzID, "grpc: Server.handleStream failed to write status: %v", err)
-    }                     
+    }
     if trInfo != nil {
         trInfo.tr.Finish()
     }
 }
 ```
 
-`processUnaryRPC()` perform the following work:
+### Process unary RPC
 
-* prepare the compression and decompression object.
-* call `recvAndDecompress()` to get the gRPC method call parameter data: `d`.
-* prepare the decode function `df` for method handler.
-* call `md.Handler()` to process the gRPC method call, the response is `reply`
-* call `s.sendResponse()` to send the response to client. Here the `Response-Headers` and `Length-Prefixed-Message` will be sent.
-* call `t.WriteStatus()` to send the trailer to end the stream. Here the `Trailers` will be sent.
+`Server.processUnaryRPC()` indirectly reads the request data frame, executes the request method calling and sends the response back to the client.
 
-Now we know the whole picture, let's dive each part one by one.
+- `processUnaryRPC()` prepares the compression and decompression object.
+- `processUnaryRPC()` calls `recvAndDecompress()` to get the RPC method parameters: `d`.
+  - Here the `Length-Prefixed-Message` will be read.
+- `processUnaryRPC()` prepares the decode function `df` for method handler.
+- `processUnaryRPC()` calls `md.Handler()` to process the RPC method calling, the response is `reply`.
+- `processUnaryRPC()` calls `s.sendResponse()` to send the response to client.
+  - Here the `Response-Headers` and `Length-Prefixed-Message` will be sent.
+- `processUnaryRPC()` call `t.WriteStatus()` to send the trailer to end the stream.
+  - Here the `Trailers` will be sent.
 
-In the following code snippet, some code is folded to avoid distraction.
+Now we know the whole picture, let's dive each part one by one. First let's discuss `recvAndDecompress()`.
 
 ```go
 func (s *Server) processUnaryRPC(t transport.ServerTransport, stream *transport.Stream, info *serviceInfo, md *MethodDesc, trInfo *traceInfo) (err error) {
-+-- 80 lines: sh := s.opts.statsHandler·····························································································································
+    sh := s.opts.statsHandler
+    if sh != nil || trInfo != nil || channelz.IsOn() {
+        if channelz.IsOn() {
+            s.incrCallsStarted()
+        }
+        var statsBegin *stats.Begin
+        if sh != nil {
+            beginTime := time.Now()
+            statsBegin = &stats.Begin{
+                BeginTime: beginTime,
+            }
+            sh.HandleRPC(stream.Context(), statsBegin)
+        }
+        if trInfo != nil {
+            trInfo.tr.LazyLog(&trInfo.firstLine, false)
+        }
+        // The deferred error handling for tracing, stats handler and channelz are
+        // combined into one function to reduce stack usage -- a defer takes ~56-64
+        // bytes on the stack, so overflowing the stack will require a stack
+        // re-allocation, which is expensive.
+        //
+        // To maintain behavior similar to separate deferred statements, statements
+        // should be executed in the reverse order. That is, tracing first, stats
+        // handler second, and channelz last. Note that panics *within* defers will
+        // lead to different behavior, but that's an acceptable compromise; that
+        // would be undefined behavior territory anyway.
+        defer func() {
+            if trInfo != nil {
+                if err != nil && err != io.EOF {
+                    trInfo.tr.LazyLog(&fmtStringer{"%v", []interface{}{err}}, true)
+                    trInfo.tr.SetError()
+                }
+                trInfo.tr.Finish()
+            }
+
+            if sh != nil {
+                end := &stats.End{
+                    BeginTime: statsBegin.BeginTime,
+                    EndTime:   time.Now(),
+                }
+                if err != nil && err != io.EOF {
+                    end.Error = toRPCErr(err)
+                }
+                sh.HandleRPC(stream.Context(), end)
+            }
+
+            if channelz.IsOn() {
+                if err != nil && err != io.EOF {
+                    s.incrCallsFailed()
+                } else {
+                    s.incrCallsSucceeded()
+                }
+            }
+        }()
+    }
+
+    binlog := binarylog.GetMethodLogger(stream.Method())
+    if binlog != nil {
+        ctx := stream.Context()
+        md, _ := metadata.FromIncomingContext(ctx)
+        logEntry := &binarylog.ClientHeader{
+            Header:     md,
+            MethodName: stream.Method(),
+            PeerAddr:   nil,
+        }
+        if deadline, ok := ctx.Deadline(); ok {
+            logEntry.Timeout = time.Until(deadline)
+            if logEntry.Timeout < 0 {
+                logEntry.Timeout = 0
+            }
+        }
+        if a := md[":authority"]; len(a) > 0 {
+            logEntry.Authority = a[0]
+        }
+        if peer, ok := peer.FromContext(ctx); ok {
+            logEntry.PeerAddr = peer.Addr
+        }
+        binlog.Log(logEntry)
+    }
+
     // comp and cp are used for compression.  decomp and dc are used for
     // decompression.  If comp and decomp are both set, they are the same;
     // however they are kept separate to ensure that at most one of the
     // compressor/decompressor variable pairs are set for use later.
     var comp, decomp encoding.Compressor
-    var cp Compressor 
-    var dc Decompressor            
-                                      
-+-- 27 lines: If dc is set and matches the stream's compression, use it.  Otherwise, try············································································
-             
-    var payInfo *payloadInfo                          
+    var cp Compressor
+    var dc Decompressor
+
+    // If dc is set and matches the stream's compression, use it.  Otherwise, try
+    // to find a matching registered compressor for decomp.
+    if rc := stream.RecvCompress(); s.opts.dc != nil && s.opts.dc.Type() == rc {
+        dc = s.opts.dc
+    } else if rc != "" && rc != encoding.Identity {
+        decomp = encoding.GetCompressor(rc)
+        if decomp == nil {
+            st := status.Newf(codes.Unimplemented, "grpc: Decompressor is not installed for grpc-encoding %q", rc)
+            t.WriteStatus(stream, st)
+            return st.Err()
+        }
+    }
+
+    // If cp is set, use it.  Otherwise, attempt to compress the response using
+    // the incoming message compression method.
+    //
+    // NOTE: this needs to be ahead of all handling, https://github.com/grpc/grpc-go/issues/686.
+    if s.opts.cp != nil {
+        cp = s.opts.cp
+        stream.SetSendCompress(cp.Type())
+    } else if rc := stream.RecvCompress(); rc != "" && rc != encoding.Identity {
+        // Legacy compressor not specified; attempt to respond with same encoding.
+        comp = encoding.GetCompressor(rc)
+        if comp != nil {
+            stream.SetSendCompress(rc)
+        }
+    }
+
+    var payInfo *payloadInfo
     if sh != nil || binlog != nil {
         payInfo = &payloadInfo{}
-    }                                                  
+    }
     d, err := recvAndDecompress(&parser{r: stream}, stream, dc, s.opts.maxReceiveMessageSize, payInfo, decomp)
-    if err != nil {                                                               
-        if e := t.WriteStatus(stream, status.Convert(err)); e != nil {             
+    if err != nil {
+        if e := t.WriteStatus(stream, status.Convert(err)); e != nil {
             channelz.Warningf(logger, s.channelzID, "grpc: Server.processUnaryRPC failed to write status %v", e)
-        }                                    
+        }
         return err
-    }                                                                              
-    if channelz.IsOn() {                                                         
-        t.IncrMsgRecv()                                                            
-    }                                                                           
-    df := func(v interface{}) error {                   
+    }
+    if channelz.IsOn() {
+        t.IncrMsgRecv()
+    }
+    df := func(v interface{}) error {
         if err := s.getCodec(stream.ContentSubtype()).Unmarshal(d, v); err != nil {
             return status.Errorf(codes.Internal, "grpc: error unmarshalling request: %v", err)
-        }                                       
-        if sh != nil {                                                             
+        }
+        if sh != nil {
             sh.HandleRPC(stream.Context(), &stats.InPayload{
                 RecvTime:   time.Now(),
-                Payload:    v,    
+                Payload:    v,
                 WireLength: payInfo.wireLength + headerLen,
                 Data:       d,
                 Length:     len(d),
@@ -1204,7 +1534,33 @@ func (s *Server) processUnaryRPC(t transport.ServerTransport, stream *transport.
     ctx := NewContextWithServerTransportStream(stream.Context(), stream)
     reply, appErr := md.Handler(info.serviceImpl, ctx, df, s.opts.unaryInt)
     if appErr != nil {
-+-- 27 lines: appStatus, ok := status.FromError(appErr)·············································································································
+        appStatus, ok := status.FromError(appErr)
+        if !ok {
+            // Convert appErr if it is not a grpc status error.
+            appErr = status.Error(codes.Unknown, appErr.Error())
+            appStatus, _ = status.FromError(appErr)
+        }
+        if trInfo != nil {
+            trInfo.tr.LazyLog(stringer(appStatus.Message()), true)
+            trInfo.tr.SetError()
+        }
+        if e := t.WriteStatus(stream, appStatus); e != nil {
+            channelz.Warningf(logger, s.channelzID, "grpc: Server.processUnaryRPC failed to write status: %v", e)
+        }
+        if binlog != nil {
+            if h, _ := stream.Header(); h.Len() > 0 {
+                // Only log serverHeader if there was header. Otherwise it can
+                // be trailer only.
+                binlog.Log(&binarylog.ServerHeader{
+                    Header: h,
+                })
+            }
+            binlog.Log(&binarylog.ServerTrailer{
+                Trailer: stream.Trailer(),
+                Err:     appErr,
+            })
+        }
+        return appErr
     }
     if trInfo != nil {
         trInfo.tr.LazyLog(stringer("OK"), false)
@@ -1212,9 +1568,49 @@ func (s *Server) processUnaryRPC(t transport.ServerTransport, stream *transport.
     opts := &transport.Options{Last: true}
 
     if err := s.sendResponse(t, stream, reply, cp, opts, comp); err != nil {
-+-- 27 lines: if err == io.EOF {····································································································································
+        if err == io.EOF {
+            // The entire stream is done (for unary RPC only).
+            return err
+        }
+        if sts, ok := status.FromError(err); ok {
+            if e := t.WriteStatus(stream, sts); e != nil {
+                channelz.Warningf(logger, s.channelzID, "grpc: Server.processUnaryRPC failed to write status: %v", e)
+            }
+        } else {
+            switch st := err.(type) {
+            case transport.ConnectionError:
+                // Nothing to do here.
+            default:
+                panic(fmt.Sprintf("grpc: Unexpected error (%T) from sendResponse: %v", st, st))
+            }
+        }
+        if binlog != nil {
+            h, _ := stream.Header()
+            binlog.Log(&binarylog.ServerHeader{
+                Header: h,
+            })
+            binlog.Log(&binarylog.ServerTrailer{
+                Trailer: stream.Trailer(),
+                Err:     appErr,
+            })
+        }
+        return err
     }
-+-- 15 lines: if binlog != nil {····································································································································
+    if binlog != nil {
+        h, _ := stream.Header()
+        binlog.Log(&binarylog.ServerHeader{
+            Header: h,
+        })
+        binlog.Log(&binarylog.ServerMessage{
+            Message: reply,
+        })
+    }
+    if channelz.IsOn() {
+        t.IncrMsgSent()
+    }
+    if trInfo != nil {
+        trInfo.tr.LazyLog(&payload{sent: true, msg: reply}, true)
+    }
     // TODO: Should we be logging if writing status failed here, like above?
     // Should the logging be in WriteStatus?  Should we ignore the WriteStatus
     // error or allow the stats handler to see it?
@@ -1227,24 +1623,22 @@ func (s *Server) processUnaryRPC(t transport.ServerTransport, stream *transport.
     }
     return err
 }
-...
-type methodHandler func(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor UnaryServerInterceptor) (interface{}, error)
-                                                            
-// MethodDesc represents an RPC service's method specification.                      
-type MethodDesc struct {                                                            
-    MethodName string                                                              
-    Handler    methodHandler                                  
-}
 
 ```
 
-`recvAndDecompress()` call `p.recvMsg()` to read the data frame. It's more complex than you can expect. For now, let's assume `p.recvMsg()` get the payload of gRPC reqeust. See [Request parameter](parameters.md) for detail. After `p.recvMsg()` return, `Length-Prefixed-Message` (gRPC request) has been read.
+### Receive method parameters
 
-Then check the payload to find some kind of compression error. if the payload is no error and compressed, decompress the payload according to the [gRPC over HTTP2](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md)
+`recvAndDecompress()` read the data frame which contains the RPC method parameters.
 
-`df` is the decode function used by the `md.Handler()`. It first get the codec which is protobuf by default. Then it unmarshall the payload to build the gRPC request object. Please check the [Protobuf Official Encoding document](https://developers.google.com/protocol-buffers/docs/encoding).
-
-`md.Handler()` is the *KEY* to call the gRPC service method. Now the method call request object is ready, it's time to call the `methodHandler`. Please note it use the `s.opts.unaryInt` as the interceptor. See [Interceptor](interceptor.md) for more detail.  You can also refer to [Register service](#register-service) to check how to use `df` and `interceptor` in a real method handler.
+- `recvAndDecompress()` calls `p.recvMsg()` to read the data frame payload message.
+  - The `p.recvMsg()` is more complex than you can expect.
+  - In short, `p.recvMsg()` blocks until `http2Server.HandleStreams()` goroutine sends the data frame to it.
+  - Please refer to [Request parameter](parameters.md) for detail.
+- After `p.recvMsg()` return, `recvAndDecompress()` decompress the payload message.
+  - `recvAndDecompress()` calls `checkRecvPayload()` to check the payload to find some kind of compression error.
+  - if the payload is ok and compressed,  `recvAndDecompress()` calls `dc.Do()` or `decompress` to decompress the payload.
+  - Please refer to [gRPC over HTTP2](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md) for decompression.
+  - Now, The `Length-Prefixed-Message` (gRPC request) has been read.
 
 ```txt
 The repeated sequence of Length-Prefixed-Message items is delivered in DATA frames
@@ -1254,30 +1648,30 @@ The repeated sequence of Length-Prefixed-Message items is delivered in DATA fram
 * Message → *{binary octet}
 ```
 
-Finally return the decompressed payload byte slice.
+Now, the RPC method parameters is ready. Next, let's discuss `md.Handler()` in detail.
 
 ```go
-func recvAndDecompress(p *parser, s *transport.Stream, dc Decompressor, maxReceiveMessageSize int, payInfo *payloadInfo, compressor encoding.Compressor) ([]byte, er  ror) {                                                                                                                                       
-    pf, d, err := p.recvMsg(maxReceiveMessageSize)  
-    if err != nil {                                                                                                                               
+func recvAndDecompress(p *parser, s *transport.Stream, dc Decompressor, maxReceiveMessageSize int, payInfo *payloadInfo, compressor encoding.Compressor) ([]byte, error) {
+    pf, d, err := p.recvMsg(maxReceiveMessageSize)
+    if err != nil {
         return nil, err
-    }                                                                          
-    if payInfo != nil {              
-        payInfo.wireLength = len(d)                               
-    }                                                              
-                                                                 
+    }
+    if payInfo != nil {
+        payInfo.wireLength = len(d)
+    }
+
     if st := checkRecvPayload(pf, s.RecvCompress(), compressor != nil || dc != nil); st != nil {
-        return nil, st.Err()                              
-    }                                 
-        
-    var size int       
-    if pf == compressionMade {        
+        return nil, st.Err()
+    }
+
+    var size int
+    if pf == compressionMade {
         // To match legacy behavior, if the decompressor is set by WithDecompressor or RPCDecompressor,
-        // use this decompressor as the default.                                                                                                  
-        if dc != nil {                                                   
-            d, err = dc.Do(bytes.NewReader(d))                                 
-            size = len(d)                                  
-        } else {                                                        
+        // use this decompressor as the default.
+        if dc != nil {
+            d, err = dc.Do(bytes.NewReader(d))
+            size = len(d)
+        } else {
             d, size, err = decompress(compressor, d, maxReceiveMessageSize)
         }
         if err != nil {
@@ -1295,6 +1689,55 @@ func recvAndDecompress(p *parser, s *transport.Stream, dc Decompressor, maxRecei
 }
 ```
 
+### Invoke service method
+
+`processUnaryRPC()` calls `md.Handler()` to invoke the target service method.
+
+- `processUnaryRPC()` prepares the `df` function for `md.Handler()`. `df` unmarshalls the payload data into RPC request parameter.
+- The `md` parameter of `processUnaryRPC()` is the `MethodDesc`, which is initialized in [Register service](#register-service).
+- the `info` parameter of `processUnaryRPC()` is the `serviceInfo`, which is initialized in [Register service](#register-service).
+
+Now everything is ready,
+
+- When `md.Handler()` is called by `processUnaryRPC()`, actually `_Greeter_SayHello_Handler` is called.
+- `_Greeter_SayHello_Handler` calls `GreeterServer.SayHello()`.
+- `GreeterServer.SayHello()` finishes the business logic and returns the response type.
+
+Next, let's discuss `s.sendResponse()` in detail.
+
+```go
+func _Greeter_SayHello_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+    in := new(HelloRequest)
+    if err := dec(in); err != nil {
+        return nil, err
+    }
+    if interceptor == nil {
+        return srv.(GreeterServer).SayHello(ctx, in)
+    }
+    info := &grpc.UnaryServerInfo{
+        Server:     srv,
+        FullMethod: "/helloworld.Greeter/SayHello",
+    }
+    handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+        return srv.(GreeterServer).SayHello(ctx, req.(*HelloRequest))
+    }
+    return interceptor(ctx, in, info, handler)
+}
+
+type methodHandler func(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor UnaryServerInterceptor) (interface{}, error)
+
+// MethodDesc represents an RPC service's method specification.
+type MethodDesc struct {
+    MethodName string
+    Handler    methodHandler
+}
+```
+
+### Send response header
+
+`processUnaryRPC()` calls `md.Handler()` to send the `Response-Headers` and `Length-Prefixed-Message` to client.
+
+Finally return the decompressed payload byte slice.
 `sendResponse()` send the response to client. It first get the codec and encode (default protobuf) the response to byte slice, then it may compress the response payload and build the payload header.
 
 Finally call `t.Write()` to  write the `Response-Headers` and `Length-Prefixed-Message` to client. Both `writeHeaderLocked()` and `Write()` use `t.controlBuf` to write back to client. See [controlBuffer and loopy](control.md) for detail.
