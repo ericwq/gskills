@@ -12,7 +12,8 @@
   - [Process unary RPC](#process-unary-rpc)
   - [Receive method parameters](#receive-method-parameters)
   - [Invoke service method](#invoke-service-method)
-  - [Send response header](#send-response-header)
+  - [Send response header and data](#send-response-header-and-data)
+  - [Finish stream](#finish-stream)
 
 gRPC uses HTTP 2 frames to send request and process response. But how to do that exactly? Let's explain the detail of implementation of server side response. [gRPC over HTTP2](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md) is a good start point to explain the design of gRPC over HTTP 2. In brief, the gRPC response is composited by three parts:
 
@@ -226,6 +227,7 @@ type Server struct {
 The following is the serve request sequence diagram.  It focus on the three parts: `Response-Headers`, `Length-Prefixed-Message` and `Trailers`.
 
 - Yellow box represents the important type and method/function.
+- Blue box represents a placeholder for the runtime type.
 - Arrow represents the call direction and order.
 - Right red dot means there is another map for that box.
 
@@ -1733,14 +1735,23 @@ type MethodDesc struct {
 }
 ```
 
-### Send response header
+### Send response header and data
 
-`processUnaryRPC()` calls `md.Handler()` to send the `Response-Headers` and `Length-Prefixed-Message` to client.
+`processUnaryRPC()` calls `s.sendResponse()` to send the `Response-Headers` and `Length-Prefixed-Message` to client.
 
-Finally return the decompressed payload byte slice.
-`sendResponse()` send the response to client. It first get the codec and encode (default protobuf) the response to byte slice, then it may compress the response payload and build the payload header.
-
-Finally call `t.Write()` to  write the `Response-Headers` and `Length-Prefixed-Message` to client. Both `writeHeaderLocked()` and `Write()` use `t.controlBuf` to write back to client. See [controlBuffer and loopy](control.md) for detail.
+- `s.sendResponse()` is `Server.sendResponse()`.
+- `Server.sendResponse()` accepts the `reply` message returned from the previous steps.
+- `Server.sendResponse()` encodes and compresses the reply message.
+- `Server.sendResponse()` calls `t.Write()` to send the reply message. `t.Write()` is actually `http2Server.Write()`.
+  - `http2Server.Write()` calls `t.WriteHeader()` to send the reply header. `t.WriteHeader()` is `http2Server.WriteHeader()`.
+    - `http2Server.WriteHeader()` calls `t.writeHeaderLocked()` to finish the job. `t.writeHeaderLocked()` is `http2Server.writeHeaderLocked()`.
+    - `http2Server.writeHeaderLocked()` fills `":status"` and `"content-type"` headers.
+    - `http2Server.writeHeaderLocked()` calls `t.controlBuf.executeAndPut()` to send the reply header.
+    - Here, `Response-Headers` is sent to client.
+  - `http2Server.Write()` creates `dataFrame` based on the reply message and sent it by calling `t.controlBuf.put()`.
+  - Here, `Length-Prefixed-Message` is sent to client.
+  
+For `t.controlBuf.executeAndPut()` and `t.controlBuf.put()`, please refer to  [controlBuffer and loopy](control.md) for detail.
 
 Here is the response example:
 
@@ -1758,18 +1769,20 @@ grpc-status = 0 # OK
 trace-proto-bin = jher831yy13JHy3hc
 ```
 
+Now, the response header and data frame has been sent to client. Next, let's discuss `t.WriteStatus()` in detail.
+
 ```go
-func (s *Server) sendResponse(t transport.ServerTransport, stream *transport.Stream, msg interface{}, cp Compressor, opts *transport.Options, comp encoding.Compress  or) error {                                                       
+func (s *Server) sendResponse(t transport.ServerTransport, stream *transport.Stream, msg interface{}, cp Compressor, opts *transport.Options, comp encoding.Compressor) error {
     data, err := encode(s.getCodec(stream.ContentSubtype()), msg)
     if err != nil {
         channelz.Error(logger, s.channelzID, "grpc: server failed to encode response: ", err)
-        return err                                                      
-    }                                                                      
+        return err
+    }
     compData, err := compress(data, cp, comp)
     if err != nil {
         channelz.Error(logger, s.channelzID, "grpc: server failed to compress response: ", err)
-        return err    
-    }                                           
+        return err
+    }
     hdr, payload := msgHeader(data, compData)
     // TODO(dfawley): should we be checking len(data) instead?
     if len(payload) > s.opts.maxSendMessageSize {
@@ -1778,11 +1791,10 @@ func (s *Server) sendResponse(t transport.ServerTransport, stream *transport.Str
     err = t.Write(stream, hdr, payload, opts)
     if err == nil && s.opts.statsHandler != nil {
         s.opts.statsHandler.HandleRPC(stream.Context(), outPayload(false, msg, data, payload, time.Now()))
-    }                                                                         
-    return err                                    
+    }
+    return err
 }
 
-...
 // Write converts the data into HTTP2 data frame and sends it out. Non-nil error
 // is returns if it fails (e.g., framing error, transport error).
 func (t *http2Server) Write(s *Stream, hdr []byte, data []byte, opts *Options) error {
@@ -1790,24 +1802,24 @@ func (t *http2Server) Write(s *Stream, hdr []byte, data []byte, opts *Options) e
         if err := t.WriteHeader(s, nil); err != nil {
             if _, ok := err.(ConnectionError); ok {
                 return err
-            }                                            
+            }
             // TODO(mmukhi, dfawley): Make sure this is the right code to return.
             return status.Errorf(codes.Internal, "transport: %v", err)
-        }                                                              
-    } else {                                                                      
-        // Writing headers checks for this condition.              
+        }
+    } else {
+        // Writing headers checks for this condition.
         if s.getState() == streamDone {
-            // TODO(mmukhi, dfawley): Should the server write also return io.EOF?   
-            s.cancel()                                                          
-            select {                                                           
-            case <-t.done:                                                                                 
-                return ErrConnClosing                                          
-            default:                                                                                             
-            }                                                                            
-            return ContextErr(s.ctx.Err())                                                                                     
-        }        
-    }                                                                                                                            
-    df := &dataFrame{                                                               
+            // TODO(mmukhi, dfawley): Should the server write also return io.EOF?
+            s.cancel()
+            select {
+            case <-t.done:
+                return ErrConnClosing
+            default:
+            }
+            return ContextErr(s.ctx.Err())
+        }
+    }
+    df := &dataFrame{
         streamID:    s.id,
         h:           hdr,
         d:           data,
@@ -1824,27 +1836,26 @@ func (t *http2Server) Write(s *Stream, hdr []byte, data []byte, opts *Options) e
     return t.controlBuf.put(df)
 }
 
-...
-// WriteHeader sends the header metadata md back to the client.                                                  
-func (t *http2Server) WriteHeader(s *Stream, md metadata.MD) error {                     
-    if s.updateHeaderSent() || s.getState() == streamDone {                                                                    
+// WriteHeader sends the header metadata md back to the client.
+func (t *http2Server) WriteHeader(s *Stream, md metadata.MD) error {
+    if s.updateHeaderSent() || s.getState() == streamDone {
         return ErrIllegalHeaderWrite
-    }                                                                                                                            
-    s.hdrMu.Lock()                                                                  
-    if md.Len() > 0 {     
+    }
+    s.hdrMu.Lock()
+    if md.Len() > 0 {
         if s.header.Len() > 0 {
             s.header = metadata.Join(s.header, md)
-        } else {                           
+        } else {
             s.header = md
-        }                                                        
-    }           
+        }
+    }
     if err := t.writeHeaderLocked(s); err != nil {
-        s.hdrMu.Unlock()         
+        s.hdrMu.Unlock()
         return err
-    }    
-    s.hdrMu.Unlock()                  
+    }
+    s.hdrMu.Unlock()
     return nil
-}          
+}
 
 func (t *http2Server) writeHeaderLocked(s *Stream) error {
     // TODO(mmukhi): Benchmark if the performance gets better if count the metadata and other header fields
@@ -1882,11 +1893,22 @@ func (t *http2Server) writeHeaderLocked(s *Stream) error {
 }
 ```
 
+### Finish stream
+
+`processUnaryRPC()` calls `t.WriteStatus()` send the trailer to end the stream.
+
+- `t.WriteStatus()` is actually `http2Server.WriteStatus()`.
+- `http2Server.WriteStatus()` adds headers: `"grpc-status"` and `"grpc-message"` to create `trailingHeader`.
+- `http2Server.WriteStatus()` checks the size of `trailingHeader`.
+  - Please note `t.controlBuf.execute(t.checkForHeaderListSize, trailingHeader)` only runs `t.checkForHeaderListSize`.
+- `http2Server.WriteStatus()` calls `t.finishStream()` to send the `trailingHeader`.
+  - `t.finishStream()` is actually `http2Server.finishStream()`.
+  - `http2Server.finishStream()` builds the `cleanupStream` and calls `t.controlBuf.put()` to send it to client.
+  - Here, the `Trailers` is sent.
+
 `t.WriteStatus()` is the last one to be called in `processUnaryRPC()`. It job is sending stream status to the client and terminates the stream.
 
-`t.Write()` build the header fields and trailer header frame and send it back with `t.controlBuf`. Then call `t.finishStream()` to end the stream. `t.finishStream()` also use `t.controlBuf` to write back to client. See [controlBuffer and loopy](control.md) for detail.
-
-Now the `Trailers` is sent.
+For `t.controlBuf.executeAndPut()` and `t.controlBuf.put()`, please refer to  [controlBuffer and loopy](control.md) for detail.
 
 ```go
 // WriteStatus sends stream status to the client and terminates the stream.
@@ -1908,17 +1930,17 @@ func (t *http2Server) WriteStatus(s *Stream, st *status.Status) error {
                 return err
             }
         } else { // Send a trailer only response.
-            headerFields = append(headerFields, hpack.HeaderField{Name: ":status", Value: "200"})                                      
+            headerFields = append(headerFields, hpack.HeaderField{Name: ":status", Value: "200"})
             headerFields = append(headerFields, hpack.HeaderField{Name: "content-type", Value: grpcutil.ContentType(s.contentSubtype)})
         }
     }
-    headerFields = append(headerFields, hpack.HeaderField{Name: "grpc-status", Value: strconv.Itoa(int(st.Code()))})    
+    headerFields = append(headerFields, hpack.HeaderField{Name: "grpc-status", Value: strconv.Itoa(int(st.Code()))})
     headerFields = append(headerFields, hpack.HeaderField{Name: "grpc-message", Value: encodeGrpcMessage(st.Message())})
 
     if p := st.Proto(); p != nil && len(p.Details) > 0 {
-        stBytes, err := proto.Marshal(p)                                      
-        if err != nil {                                                                    
-            // TODO: return error instead, when callers are able to handle it.                                                      
+        stBytes, err := proto.Marshal(p)
+        if err != nil {
+            // TODO: return error instead, when callers are able to handle it.
             logger.Errorf("transport: failed to marshal rpc status: %v, error: %v", p, err)
         } else {
             headerFields = append(headerFields, hpack.HeaderField{Name: "grpc-status-details-bin", Value: encodeBinHeader(stBytes)})
@@ -1954,23 +1976,23 @@ func (t *http2Server) WriteStatus(s *Stream, st *status.Status) error {
     }
     return nil
 }
+
 // finishStream closes the stream and puts the trailing headerFrame into controlbuf.
 func (t *http2Server) finishStream(s *Stream, rst bool, rstCode http2.ErrCode, hdr *headerFrame, eosReceived bool) {
-    oldState := s.swapState(streamDone)                                               
-    if oldState == streamDone {        
-        // If the stream was already done, return.               
-        return         
-    }                                                                                 
-                                           
-    hdr.cleanup = &cleanupStream{                        
-        streamID: s.id,               
+    oldState := s.swapState(streamDone)
+    if oldState == streamDone {
+        // If the stream was already done, return.
+        return
+    }
+
+    hdr.cleanup = &cleanupStream{
+        streamID: s.id,
         rst:      rst,
         rstCode:  rstCode,
         onWrite: func() {
             t.deleteStream(s, eosReceived)
         },
-    }                                                                           
-    t.controlBuf.put(hdr)                                        
-}                                                                                     
-
+    }
+    t.controlBuf.put(hdr)
+}
 ```
