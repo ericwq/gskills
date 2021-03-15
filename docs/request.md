@@ -31,6 +31,8 @@ The following is the gRPC request client side sequence diagram. It focus on send
 
 Here is the gRPC client application code snippet. It calls `pb.NewGreeterClient()` to create the client stub and calls `c.SayHello()` to send the request over HTTP 2. Pretty simple, right?
 
+Please note the connections to the target server is already established by `grpc.Dial()`. `c.SayHello()` will use one of the connections to send the request. See [Client Dial](dial.md) for detail.
+
 Let's continue to see what happens under the hood.
 
 ```go

@@ -17,6 +17,7 @@ Done:
 
 Plan:
 
+- `Receive response` can provide client view of transport layer. Deserve a chapter.
 - How to choose the endpoint during RPC calling? `xDS protocol` still needs an extra article.
 - Plan to write `Stream dial`, `Stream request and response`.
 
