@@ -14,10 +14,10 @@ Done:
 - `xDS protocol - LDS/RDS` and `xDS protocol - CDS/EDS` is done.
 - `Send Request` is completely rewritten.
 - `Send Response` is completely rewritten.
+- `The transport` is down. This chapter provide whole picture from the view of transport.
 
 Plan:
 
-- `Receive response` can provide client view of transport layer. Deserve a chapter.
 - How to choose the endpoint during RPC calling? `xDS protocol` still needs an extra article.
 - Plan to write `Stream dial`, `Stream request and response`.
 

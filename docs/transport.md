@@ -2,10 +2,14 @@
 
 - [Client transport](#client-transport)
   - [Client connection](#client-connection)
-  - [Send frames](#send-frames)
-  - [Receive frames](#receive-frames)
+  - [Client send frames](#client-send-frames)
+  - [Client receive frames](#client-receive-frames)
   - [Client receive message](#client-receive-message)
 - [Server transport](#server-transport)
+  - [Server connection](#server-connection)
+  - [Server send frames](#server-send-frames)
+  - [Server receive frames](#server-receive-frames)
+  - [Server receive message](#server-receive-message)
 
 gRPC hides the transport layer from the other parts. `controlBuffer`, `loopyWriter` and `framer` are important type to help gRPC to hide the transport. Here we will discuss the design of client transport and server transport.
 
@@ -119,7 +123,7 @@ func newHTTP2Client(connectCtx, ctx context.Context, addr resolver.Address, opts
 }
 ```
 
-### Send frames
+### Client send frames
 
 gRPC calls `controlBuffer.executeAndPut()` to store control frames into `controlBuffer`. `loopyWriter.run()` reads control frames from `controlBuffer` and processes them by:
 
@@ -207,7 +211,7 @@ func (l *loopyWriter) run() (err error) {
 }
 ```
 
-### Receive frames
+### Client receive frames
 
 `http2Client.reader()` is in charge of reading data from wire and dispatches them to gRPC.
 
@@ -662,4 +666,424 @@ func recvAndDecompress(p *parser, s *transport.Stream, dc Decompressor, maxRecei
 
 ## Server transport
 
+In [Send Response](response.md), we only give the brief explanation about receive method parameters. Here we will give the detail explanation, which covers the whole server transport process.
+
+Let's start our discussion from `newHTTP2Transport()`.
+
 ![Server Transport Diagram](../images/images.019.png)
+
+- Yellow box represents the important type and method/function.
+- Green box represents a function run in a dedicated goroutine.
+- Blue box represents a placeholder for the specified type.
+- Arrow represents the call direction and order.
+- Pink arrow represents the channel communication of `Stream.buf`.
+- Blue arrow represents the channel communication of `controlBuffer`.
+- Right red dot represents there is another diagram for that box.
+- Left red dot represents the box is a extension part from other diagram.
+
+### Server connection
+
+`newHTTP2Transport()` is calls when the server is ready to accept a client connection request. In [Prepare for stream](response.md#prepare-for-stream), we give a long description about `newHTTP2Transport()`. Now we will show the view from transport layer.
+
+`newHTTP2Server()` establishes the connection between client and server. Each connection between client and server has a `ServerTransport`, which is actually `http2Server`. `http2Server` contains:
+
+- Two goroutine: one is `t.keepalive()`, the other is `t.loopy.run()`.
+  - `t.loopy.run()` uses `t.controlBuf` and `t.framer` to send frames to client.
+  - `t.keepalive()` keeps alive the connection.
+- One `controlBuf`, that is `t.controlBuf`, which is the sending buffer.
+- One `framer`, that is `t.framer`, which is used to send and receive frames.
+
+```go
+// newHTTP2Transport sets up a http/2 transport (using the
+// gRPC http2 server transport in transport/http2_server.go).
+func (s *Server) newHTTP2Transport(c net.Conn, authInfo credentials.AuthInfo) transport.ServerTransport {
+    config := &transport.ServerConfig{
+        MaxStreams:            s.opts.maxConcurrentStreams,
+        AuthInfo:              authInfo,
+        InTapHandle:           s.opts.inTapHandle,
+        StatsHandler:          s.opts.statsHandler,
+        KeepaliveParams:       s.opts.keepaliveParams,
+        KeepalivePolicy:       s.opts.keepalivePolicy,
+        InitialWindowSize:     s.opts.initialWindowSize,
+        InitialConnWindowSize: s.opts.initialConnWindowSize,
+        WriteBufferSize:       s.opts.writeBufferSize,
+        ReadBufferSize:        s.opts.readBufferSize,
+        ChannelzParentID:      s.channelzID,
+        MaxHeaderListSize:     s.opts.maxHeaderListSize,
+        HeaderTableSize:       s.opts.headerTableSize,
+    }
+    st, err := transport.NewServerTransport("http2", c, config)
+    if err != nil {
+        s.mu.Lock()
+        s.errorf("NewServerTransport(%q) failed: %v", c.RemoteAddr(), err)
+        s.mu.Unlock()
+        c.Close()
+        channelz.Warning(logger, s.channelzID, "grpc: Server.Serve failed to create ServerTransport: ", err)
+        return nil
+    }
+
+    return st
+}
+
+// NewServerTransport creates a ServerTransport with conn or non-nil error
+// if it fails.
+func NewServerTransport(protocol string, conn net.Conn, config *ServerConfig) (ServerTransport, error) {
+    return newHTTP2Server(conn, config)
+}
+
+// newHTTP2Server constructs a ServerTransport based on HTTP2. ConnectionError is
+// returned if something goes wrong.
+func newHTTP2Server(conn net.Conn, config *ServerConfig) (_ ServerTransport, err error) {
++--  6 lines: writeBufSize := config.WriteBufferSize···············································································································
+    framer := newFramer(conn, writeBufSize, readBufSize, maxHeaderListSize)
++-- 76 lines: Send initial settings as connection preface to client.·······························································································
+    t := &http2Server{
+        ctx:               context.Background(),
+        done:              done,
+        conn:              conn,
+        remoteAddr:        conn.RemoteAddr(),
+        localAddr:         conn.LocalAddr(),
+        authInfo:          config.AuthInfo,
+        framer:            framer,
+        readerDone:        make(chan struct{}),
+        writerDone:        make(chan struct{}),
+        maxStreams:        maxStreams,
+        inTapHandle:       config.InTapHandle,
+        fc:                &trInFlow{limit: uint32(icwz)},
+        state:             reachable,
+        activeStreams:     make(map[uint32]*Stream),
+        stats:             config.StatsHandler,
+        kp:                kp,
+        idle:              time.Now(),
+        kep:               kep,
+        initialWindowSize: iwz,
+        czData:            new(channelzData),
+        bufferPool:        newBufferPool(),
+    }
+    t.controlBuf = newControlBuffer(t.done)
++-- 50 lines: if dynamicWindow {···································································································································
+
+    go func() {
+        t.loopy = newLoopyWriter(serverSide, t.framer, t.controlBuf, t.bdpEst)
+        t.loopy.ssGoAwayHandler = t.outgoingGoAwayHandler
+        if err := t.loopy.run(); err != nil {
+            if logger.V(logLevel) {
+                logger.Errorf("transport: loopyWriter.run returning. Err: %v", err)
+            }
+        }
+        t.conn.Close()
+        close(t.writerDone)
+    }()
+    go t.keepalive()
+    return t, nil
+}
+
+```
+
+### Server send frames
+
+On the server side, sending frames uses the same design as the client side. `controlBuffer` is used as the temporary storage for sending frames. `loopyWriter` reads control frames from `controlBuffer` and process them.
+
+Please refer to [Client send frames](#client-send-frames) for detail.
+
+### Server receive frames
+
+`HandleStreams()` receives incoming frames and dispatches them to gRPC.
+
+- `HandleStreams()` uses `t.framer.fr.ReadFrame()` to receive frames from wire.
+- Upon receive `MetaHeadersFrame`,
+  - `HandleStreams()` calls `t.operateHeaders()` to process it.
+  - `t.operateHeaders()` will start to serve the request. See [Decode header](response.md#decode-header).
+- Upon receive `DataFrame`,
+  - `HandleStreams()` calls `t.handleData()` to process it.
+  - `t.handleData()` calls `s.write()` to send the data to `Stream.buf`.
+  - See [Message sender](parameters.md#message-sender) for detail.
+
+Next, let's discuss how the server receive message.
+
+```go
+// HandleStreams receives incoming streams using the given handler. This is
+// typically run in a separate goroutine.
+// traceCtx attaches trace to ctx and returns the new context.
+func (t *http2Server) HandleStreams(handle func(*Stream), traceCtx func(context.Context, string) context.Context) {
+    defer close(t.readerDone)
+    for {
+        t.controlBuf.throttle()
+        frame, err := t.framer.fr.ReadFrame()
+        atomic.StoreInt64(&t.lastRead, time.Now().UnixNano())
+        if err != nil {
+            if se, ok := err.(http2.StreamError); ok {
+                if logger.V(logLevel) {
+                    logger.Warningf("transport: http2Server.HandleStreams encountered http2.StreamError: %v", se)
+                }
+                t.mu.Lock()
+                s := t.activeStreams[se.StreamID]
+                t.mu.Unlock()
+                if s != nil {
+                    t.closeStream(s, true, se.Code, false)
+                } else {
+                    t.controlBuf.put(&cleanupStream{
+                        streamID: se.StreamID,
+                        rst:      true,
+                        rstCode:  se.Code,
+                        onWrite:  func() {},
+                    })
+                }
+                continue
+            }
+            if err == io.EOF || err == io.ErrUnexpectedEOF {
+                t.Close()
+                return
+            }
+            if logger.V(logLevel) {
+                logger.Warningf("transport: http2Server.HandleStreams failed to read frame: %v", err)
+            }
+            t.Close()
+            return
+        }
+        switch frame := frame.(type) {
+        case *http2.MetaHeadersFrame:
+            if t.operateHeaders(frame, handle, traceCtx) {
+                t.Close()
+                break
+            }
+        case *http2.DataFrame:
+            t.handleData(frame)
+        case *http2.RSTStreamFrame:
+            t.handleRSTStream(frame)
+        case *http2.SettingsFrame:
+            t.handleSettings(frame)
+        case *http2.PingFrame:
+            t.handlePing(frame)
+        case *http2.WindowUpdateFrame:
+            t.handleWindowUpdate(frame)
+        case *http2.GoAwayFrame:
+            // TODO: Handle GoAway from the client appropriately.
+        default:
+            if logger.V(logLevel) {
+                logger.Errorf("transport: http2Server.HandleStreams found unhandled frame type %v.", frame)
+            }
+        }
+    }
+}
+
+// operateHeader takes action on the decoded headers.
+func (t *http2Server) operateHeaders(frame *http2.MetaHeadersFrame, handle func(*Stream), traceCtx func(context.Context, string) context.Context) (fatal bool) {
+    streamID := frame.Header().StreamID
+    state := &decodeState{
+        serverSide: true,
+    }
+    if h2code, err := state.decodeHeader(frame); err != nil {
+        if _, ok := status.FromError(err); ok {
+            t.controlBuf.put(&cleanupStream{
+                streamID: streamID,
+                rst:      true,
+                rstCode:  h2code,
+                onWrite:  func() {},
+            })
+        }
+        return false
+    }
+
+    buf := newRecvBuffer()
+    s := &Stream{
+        id:             streamID,
+        st:             t,
+        buf:            buf,
+        fc:             &inFlow{limit: uint32(t.initialWindowSize)},
+        recvCompress:   state.data.encoding,
+        method:         state.data.method,
+        contentSubtype: state.data.contentSubtype,
+    }
+    if frame.StreamEnded() {
+        // s is just created by the caller. No lock needed.
+        s.state = streamReadDone
+    }
+    if state.data.timeoutSet {
+        s.ctx, s.cancel = context.WithTimeout(t.ctx, state.data.timeout)
+    } else {
+        s.ctx, s.cancel = context.WithCancel(t.ctx)
+    }
+    pr := &peer.Peer{
+        Addr: t.remoteAddr,
+    }
+    // Attach Auth info if there is any.
+    if t.authInfo != nil {
+        pr.AuthInfo = t.authInfo
+    }
+    s.ctx = peer.NewContext(s.ctx, pr)
+    // Attach the received metadata to the context.
+    if len(state.data.mdata) > 0 {
+        s.ctx = metadata.NewIncomingContext(s.ctx, state.data.mdata)
+    }
+    if state.data.statsTags != nil {
+        s.ctx = stats.SetIncomingTags(s.ctx, state.data.statsTags)
+    }
+    if state.data.statsTrace != nil {
+        s.ctx = stats.SetIncomingTrace(s.ctx, state.data.statsTrace)
+    }
+    if t.inTapHandle != nil {
+        var err error
+        info := &tap.Info{
+            FullMethodName: state.data.method,
+        }
+        s.ctx, err = t.inTapHandle(s.ctx, info)
+        if err != nil {
+            if logger.V(logLevel) {
+                logger.Warningf("transport: http2Server.operateHeaders got an error from InTapHandle: %v", err)
+            }
+            t.controlBuf.put(&cleanupStream{
+                streamID: s.id,
+                rst:      true,
+                rstCode:  http2.ErrCodeRefusedStream,
+                onWrite:  func() {},
+            })
+            s.cancel()
+            return false
+        }
+    }
+    t.mu.Lock()
+    if t.state != reachable {
+        t.mu.Unlock()
+        s.cancel()
+        return false
+    }
+    if uint32(len(t.activeStreams)) >= t.maxStreams {
+        t.mu.Unlock()
+        t.controlBuf.put(&cleanupStream{
+            streamID: streamID,
+            rst:      true,
+            rstCode:  http2.ErrCodeRefusedStream,
+            onWrite:  func() {},
+        })
+        s.cancel()
+        return false
+    }
+    if streamID%2 != 1 || streamID <= t.maxStreamID {
+        t.mu.Unlock()
+        // illegal gRPC stream id.
+        if logger.V(logLevel) {
+            logger.Errorf("transport: http2Server.HandleStreams received an illegal stream id: %v", streamID)
+        }
+        s.cancel()
+        return true
+    }
+    t.maxStreamID = streamID
+    t.activeStreams[streamID] = s
+    if len(t.activeStreams) == 1 {
+        t.idle = time.Time{}
+    }
+    t.mu.Unlock()
+    if channelz.IsOn() {
+        atomic.AddInt64(&t.czData.streamsStarted, 1)
+        atomic.StoreInt64(&t.czData.lastStreamCreatedTime, time.Now().UnixNano())
+    }
+    s.requestRead = func(n int) {
+        t.adjustWindow(s, uint32(n))
+    }
+    s.ctx = traceCtx(s.ctx, s.method)
+    if t.stats != nil {
+        s.ctx = t.stats.TagRPC(s.ctx, &stats.RPCTagInfo{FullMethodName: s.method})
+        inHeader := &stats.InHeader{
+            FullMethod:  s.method,
+            RemoteAddr:  t.remoteAddr,
+            LocalAddr:   t.localAddr,
+            Compression: s.recvCompress,
+            WireLength:  int(frame.Header().Length),
+            Header:      metadata.MD(state.data.mdata).Copy(),
+        }
+        t.stats.HandleRPC(s.ctx, inHeader)
+    }
+    s.ctxDone = s.ctx.Done()
+    s.wq = newWriteQuota(defaultWriteQuota, s.ctxDone)
+    s.trReader = &transportReader{
+        reader: &recvBufferReader{
+            ctx:        s.ctx,
+            ctxDone:    s.ctxDone,
+            recv:       s.buf,
+            freeBuffer: t.bufferPool.put,
+        },
+        windowHandler: func(n int) {
+            t.updateWindow(s, uint32(n))
+        },
+    }
+    // Register the stream with loopy.
+    t.controlBuf.put(&registerStream{
+        streamID: s.id,
+        wq:       s.wq,
+    })
+    handle(s)
+    return false
+}
+
+func (t *http2Server) handleData(f *http2.DataFrame) {
+    size := f.Header().Length
+    var sendBDPPing bool
+    if t.bdpEst != nil {
+        sendBDPPing = t.bdpEst.add(size)
+    }
+    // Decouple connection's flow control from application's read.
+    // An update on connection's flow control should not depend on
+    // whether user application has read the data or not. Such a
+    // restriction is already imposed on the stream's flow control,
+    // and therefore the sender will be blocked anyways.
+    // Decoupling the connection flow control will prevent other
+    // active(fast) streams from starving in presence of slow or
+    // inactive streams.
+    if w := t.fc.onData(size); w > 0 {
+        t.controlBuf.put(&outgoingWindowUpdate{
+            streamID:  0,
+            increment: w,
+        })
+    }
+    if sendBDPPing {
+        // Avoid excessive ping detection (e.g. in an L7 proxy)
+        // by sending a window update prior to the BDP ping.
+        if w := t.fc.reset(); w > 0 {
+            t.controlBuf.put(&outgoingWindowUpdate{
+                streamID:  0,
+                increment: w,
+            })
+        }
+        t.controlBuf.put(bdpPing)
+    }
+    // Select the right stream to dispatch.
+    s, ok := t.getStream(f)
+    if !ok {
+        return
+    }
+    if s.getState() == streamReadDone {
+        t.closeStream(s, true, http2.ErrCodeStreamClosed, false)
+        return
+    }
+    if size > 0 {
+        if err := s.fc.onData(size); err != nil {
+            t.closeStream(s, true, http2.ErrCodeFlowControl, false)
+            return
+        }
+        if f.Header().Flags.Has(http2.FlagDataPadded) {
+            if w := s.fc.onRead(size - uint32(len(f.Data()))); w > 0 {
+                t.controlBuf.put(&outgoingWindowUpdate{s.id, w})
+            }
+        }
+        // TODO(bradfitz, zhaoq): A copy is required here because there is no
+        // guarantee f.Data() is consumed before the arrival of next frame.
+        // Can this copy be eliminated?
+        if len(f.Data()) > 0 {
+            buffer := t.bufferPool.get()
+            buffer.Reset()
+            buffer.Write(f.Data())
+            s.write(recvMsg{buffer: buffer})
+        }
+    }
+    if f.Header().Flags.Has(http2.FlagDataEndStream) {
+        // Received the end of stream from the client.
+        s.compareAndSwapState(streamActive, streamReadDone)
+        s.write(recvMsg{err: io.EOF})
+    }
+}
+```
+
+### Server receive message
+
+In [The clue](parameters.md#the-clue), we fully discussed how the server receive message from client. Please refer to that document in detail.
