@@ -1013,19 +1013,7 @@ func (t *http2Client) Write(s *Stream, hdr []byte, data []byte, opts *Options) e
 
 Now the request has been sent. It's time to back to the Fork road and check the `cs.RecvMsg()`, which is actually `clientStream.RecvMsg()`.
 
-- `clientStream.RecvMsg()` calls `a.recvMsg()` to receive `recvInfo` and convert it into response type.
-- Here you can see the `op` function and `cs.withRetry()` structure again.
-  - `cs.withRetry()` is a mechanism to perform the "attempt" action with the predefined retry policy.
-  - `op` is the "attempt" action.
-  - There is an anonymous wrapper function for the `a.recvMsg()` method, where `a` is the `csAttempt`.
-    - `a.recvMsg()` is called to receive the gRPC response.
-    - `a.recvMsg()` is actually `csAttempt.recvMsg()`.
-
-In `csAttempt.recvMsg()`,
-
-- `csAttempt.recvMsg()` calls `recv()` to receive the gRPC response payload and convert it into response type.
-- `recv()` return `io.EOF` to indicates successful end of stream.
-- Here, we will not go deeper into the `recv()` . You need more HTTP 2 knowledge to understand it.
+`clientStream.RecvMsg()` needs more background knowledge about client transport. Please see [Client transport](transport.md#client-transport) for detail.
 
 ```go
 func (cs *clientStream) RecvMsg(m interface{}) error {
@@ -1067,91 +1055,5 @@ func (cs *clientStream) RecvMsg(m interface{}) error {
         }
     }
     return err
-}
-
-func (a *csAttempt) recvMsg(m interface{}, payInfo *payloadInfo) (err error) {
-    cs := a.cs
-    if a.statsHandler != nil && payInfo == nil {
-        payInfo = &payloadInfo{}
-    }
-
-    if !a.decompSet {
-        // Block until we receive headers containing received message encoding.
-        if ct := a.s.RecvCompress(); ct != "" && ct != encoding.Identity {
-            if a.dc == nil || a.dc.Type() != ct {
-                // No configured decompressor, or it does not match the incoming
-                // message encoding; attempt to find a registered compressor that does.
-                a.dc = nil
-                a.decomp = encoding.GetCompressor(ct)
-            }
-        } else {
-            // No compression is used; disable our decompressor.
-            a.dc = nil
-        }
-        // Only initialize this state once per stream.
-        a.decompSet = true
-    }
-    err = recv(a.p, cs.codec, a.s, a.dc, m, *cs.callInfo.maxReceiveMessageSize, payInfo, a.decomp)
-    if err != nil {
-        if err == io.EOF {
-            if statusErr := a.s.Status().Err(); statusErr != nil {
-                return statusErr
-            }
-            return io.EOF // indicates successful end of stream.
-        }
-        return toRPCErr(err)
-    }
-    if a.trInfo != nil {
-        a.mu.Lock()
-        if a.trInfo.tr != nil {
-            a.trInfo.tr.LazyLog(&payload{sent: false, msg: m}, true)
-        }
-        a.mu.Unlock()
-    }
-    if a.statsHandler != nil {
-        a.statsHandler.HandleRPC(cs.ctx, &stats.InPayload{
-            Client:   true,
-            RecvTime: time.Now(),
-            Payload:  m,
-            // TODO truncate large payload.
-            Data:       payInfo.uncompressedBytes,
-            WireLength: payInfo.wireLength + headerLen,
-            Length:     len(payInfo.uncompressedBytes),
-        })
-    }
-    if channelz.IsOn() {
-        a.t.IncrMsgRecv()
-    }
-    if cs.desc.ServerStreams {
-        // Subsequent messages should be received by subsequent RecvMsg calls.
-        return nil
-    }
-    // Special handling for non-server-stream rpcs.
-    // This recv expects EOF or errors, so we don't collect inPayload.
-    err = recv(a.p, cs.codec, a.s, a.dc, m, *cs.callInfo.maxReceiveMessageSize, nil, a.decomp)
-    if err == nil {
-        return toRPCErr(errors.New("grpc: client streaming protocol violation: get <nil>, want <EOF>"))
-    }
-    if err == io.EOF {
-        return a.s.Status().Err() // non-server streaming Recv returns nil on success
-    }
-    return toRPCErr(err)
-}
-
-// For the two compressor parameters, both should not be set, but if they are,
-// dc takes precedence over compressor.
-// TODO(dfawley): wrap the old compressor/decompressor using the new API?
-func recv(p *parser, c baseCodec, s *transport.Stream, dc Decompressor, m interface{}, maxReceiveMessageSize int, payInfo *payloadInfo, compressor encoding.Compressor) error {
-    d, err := recvAndDecompress(p, s, dc, maxReceiveMessageSize, payInfo, compressor)
-    if err != nil {
-        return err
-    }
-    if err := c.Unmarshal(d, m); err != nil {
-        return status.Errorf(codes.Internal, "grpc: failed to unmarshal the received message %v", err)
-    }
-    if payInfo != nil {
-        payInfo.uncompressedBytes = d
-    }
-    return nil
 }
 ```
