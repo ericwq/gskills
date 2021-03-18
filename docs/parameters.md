@@ -8,7 +8,7 @@
 
 At [Serve stream](response.md#serve-stream) processing, there is a problem we didn't discuss in detail. In one word, how does the server read the request parameter?
 
-One picture is better thousand words. The following is the server transport sequence diagram. The short answer is the following diagram.
+One picture is better thans thousand words. The following is the server transport sequence diagram. The short answer is in the following diagram.
 
 ![Server Transport](../images/images.019.png)
 
