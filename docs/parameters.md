@@ -8,7 +8,7 @@
 
 At [Serve stream](response.md#serve-stream) processing, there is a problem we didn't discuss in detail. In one word, how does the server read the request parameter?
 
-One picture is better thans thousand words. The following is the server transport sequence diagram. The short answer is in the following diagram.
+One picture is better than thousand words. The following is the server transport sequence diagram. The short answer is in the following diagram.
 
 ![Server Transport](../images/images.019.png)
 
@@ -16,8 +16,8 @@ One picture is better thans thousand words. The following is the server transpor
 * Green box represents a function run in a dedicated goroutine.
 * Blue box represents a placeholder for the specified type.
 * Arrow represents the call direction and order.
-* Pink arrow represents the channel communicate of `Stream.buf`.
-* Blue arrow represents the channel communicate of `controlBuffer`.
+* Pink arrow represents the channel communication of `Stream.buf`.
+* Blue arrow represents the channel communication of `controlBuffer`.
 * Right red dot means there is another diagram for that box.
 * Left red dot represents the box is a extension part from other diagram.
 
