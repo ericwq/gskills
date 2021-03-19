@@ -124,7 +124,7 @@ func (cc *ClientConn) Invoke(ctx context.Context, method string, args, reply int
 - Finally calls `cs.RecvMsg()` to receive the gRPC response.
   - `cs.RecvMsg()` is actually `clientStream.RecvMsg()`.
   - In this chapter, we will only touch the surface of `cs.RecvMsg()`. Our focus is the send request.
-  - Please refer to [Send Response](docs/response.md) for more detail.
+  - Please refer to [Client receive message](transport.md#client-receive-message) for more detail.
 
 Next, lets' discuss `newClientStream()` first.
 
@@ -143,7 +143,7 @@ func invoke(ctx context.Context, method string, req, reply interface{}, cc *Clie
 
 ## Send Request-Headers
 
-`newClientStream()` creates the `ClientStream`, pick up a connection to the target server and send the `Request-Headers`.
+For each RPC request, `newClientStream()` creates the `ClientStream`, picks up a connection to the target server and send the `Request-Headers`.
 
 - `newClientStream()` calls `cc.safeConfigSelector.SelectConfig()` to get the `RPCConfig`.
   - `cc.safeConfigSelector.SelectConfig()` is actually `SafeConfigSelector.SelectConfig()`.

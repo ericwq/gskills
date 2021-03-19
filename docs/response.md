@@ -821,7 +821,7 @@ func (fr *Framer) ReadFrame() (Frame, error) {
 
 ### Decode header
 
-`operateHeaders()` creates stream based on information provided by `MetaHeadersFrame`. Then it checks the stream to make sure it's validity. The final step is calling `handle()` to process the gRPC request.
+For each client request, `operateHeaders()` creates stream based on information provided by `MetaHeadersFrame`. Then it checks the stream to make sure it's validity. The final step is calling `handle()` to process the gRPC request.
 
 - `http2Server.operateHeaders()` calls `state.decodeHeader()` to decode the HTTP headers from `MetaHeadersFrame`.
   - `state.decodeHeader()` is actually `decodeState.decodeHeader()`.
