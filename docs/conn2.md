@@ -525,7 +525,7 @@ func (x *edsBalancer) run() {
 
 // updateState first handles priority, and then wraps picker in a drop picker
 // before forwarding the update.
-func (edsImpl *edsBalancerImpl) uupdateStatepdateState(priority priorityType, s balancer.State) {
+func (edsImpl *edsBalancerImpl) updateState(priority priorityType, s balancer.State) {
     _, ok := edsImpl.priorityToLocalities[priority]
     if !ok {
         edsImpl.logger.Infof("eds: received picker update from unknown priority")
