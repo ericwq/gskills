@@ -778,10 +778,12 @@ Here is the v3 `APIClientBuilder`. Please note that v3 API is registered by the 
 - `APIClientBuilder.Build()` will call `newClient()`.
 - `newClient()` creates a `v3c` object and uses `v3c` as parameter to call `xdsclient.NewTransportHelper()` to get the `TransportHelper`.
 - `NewTransportHelper()` creates `TransportHelper` object and start a goroutine `t.run()`.
-  - Inside `run()` starts a goroutine `t.send()`
-- `send()` is responsible for sending data to the stream.  See [Communicate with xDS server](#communicate-with-xds-server) for detail.
-- `run()` is responsible for receiving data from the stream.  See [Communicate with xDS server](#communicate-with-xds-server) for detail.
+  - Inside `run()`, it starts a goroutine `t.send()`
+  - `send()` is responsible for sending data to the stream.  See [Communicate with xDS server](#communicate-with-xds-server) for detail.
+  - `run()` is responsible for receiving data from the stream.  See [Communicate with xDS server](#communicate-with-xds-server) for detail.
 - Once `TransportHelper` is ready. `newClient()` returns the `v3c`.
+
+`run()` creates the stream which is used to communicate with the xDS server. The stream itself is sent to `send()` goroutine through channel `t.streamCh`. `run()` calls `recv()` to receive the xDS response message. `send()` keeps receive the message from `t.sendCh`, upon receive the message, `send()` sends xDS request to xDS server.
 
 In next chapter, We will continue the discussion how to communicate with xDS server.
 
@@ -1823,7 +1825,7 @@ In this stage, we will accomplish the following job:
 
 Please note: `handleLDSResp()` calls `WatchRouteConfig()`, `WatchRouteConfig()` uses the `update.RouteConfigName` as the resource name for RDS request. `update.RouteConfigName` is actually based on the value from LDS response `Listener.ApiListener.ApiListener.HttpConnectionManager.rds.route_config_name`.  Which means gRPC gets the RDS resource name from the LDS response. Then gRPC sends RDS request with the specified resource name.
 
-After the invocation of `handleServiceUpdate()`, a `w.lastUpdate` was sent to channel `r.updateCh`. `w.lastUpdate` is a `serviceUpdate`. In our case, only `sesrviceUpdate.ldsConfig` field is modified.
+After the invocation of `handleServiceUpdate()`, a `w.lastUpdate` was sent to channel `r.updateCh`. `w.lastUpdate` is a `serviceUpdate`. In our case, only `serviceUpdate.ldsConfig` field is modified.
 
 Next, we will discuss the processing of the RDS `watchAction`.
 
