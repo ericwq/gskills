@@ -2496,6 +2496,8 @@ type ldsConfig struct {
 
 ### Build `ServiceConfig`
 
+Upon receive the RDS update, `xdsResolver.run()` builds the `ServiceConfig` and sends it to gRPC. After gRPC receive the `ServiceConfig`, CDS balancer will be created.
+
 `xdsResolver.run()` is waiting on the channel `r.updateCh`. Upon receive the `suWithError` message:
 
 - `run()` calls `r.newConfigSelector()` with `update.su` as parameter. `update.su` is of type `serviceUpdate`. `serviceUpdate` contains `routes`.

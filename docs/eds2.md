@@ -11,6 +11,8 @@ In the previous article [Initialize EDS balancer](eds.md#initialize-eds-balancer
 
 ## Initialize endpoints
 
+Each CDS balancer creates one EDS balancer. The EDS balancer will send EDS request and process the EDS response.
+
 In this stage, we continue the discussion of xDS protocol: EDS request and response. Now the EDS balancer got the message on channel `x.grpcUpdate`. It's the time to receive that message. Here is the map for this stage. In this map:
 
 - Yellow box represents the important type and method/function.

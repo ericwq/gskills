@@ -30,7 +30,7 @@
   - [Update state](conn2.md#update-state)
   - [Get notification](conn2.md#get-notification)
 
-In the previous article [xDS protocol - LDS/RDS](lds.md), we discussed the xDS resolver and LDS/RDS. In this article we will discuss the xDS balancer and CDS/EDS. In my guess: RDS returns a group of cluster name based on the domain matched `Route`. The matching `path` and other matching criteria can only be performed after we receive a real RPC request. It has to postpone the CDS/EDS to that time.
+In the previous article [xDS protocol - LDS/RDS](lds.md), we discussed the xDS resolver and LDS/RDS. In this article we will discuss the xDS balancer and CDS/EDS. Why gRPC separates the ADS into two phases: LDS and CDS? In my guess: RDS returns a group of cluster name based on the domain matched `Route`. The matching `path` and other matching criteria can only be performed after we receive a real RPC request. It has to postpone the CDS/EDS to that time.
 
 ## Example Service Config
 
@@ -573,6 +573,8 @@ func (b *bal) UpdateClientConnState(s balancer.ClientConnState) error {
 ```
 
 ### Initialize balancer group
+
+Every member of `activeClusters` will get a `childPolicy` in `ServiceConfig`. Every `childPolicy` will get a CDS balancer. All the CDS balancers is stored in `BalancerGroup.idToBalancerConfig`, which is `map[string]*subBalancerWrapper`. Each CDS balancer runs its goroutine `cdsBalancer.run()`.
 
 In `updateChildren()`, for each policy in `newConfig.Children`:
 
