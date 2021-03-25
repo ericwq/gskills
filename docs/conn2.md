@@ -2,6 +2,7 @@
 
 - [Connect to upstream server](conn.md#connect-to-upstream-server)
   - [Add sub balancer](conn.md#add-sub-balancer)
+  - [Start balancer](conn.md#start-balancer)
   - [Update connection state](conn.md#update-connection-state)
   - [Prepare for the sub-connection](conn.md#prepare-for-the-sub-connection)
   - [Start connection](conn.md#start-connection)
