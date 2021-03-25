@@ -455,6 +455,8 @@ func (x *edsBalancer) handleEDSUpdate(resp xdsclient.EndpointsUpdate, err error)
 
 ### Process EDS update
 
+The response endpoints is re-ordered by priority. Each priority has a balancer group. Only the priority in use is started.
+
 `edsBalancer.run()` is waiting on the channel `x.xdsClientUpdate`, Upon receives `edsUpdate` message:
 
 - `run()` calls `x.handleXDSClientUpdate()`, which is actually `edsBalancer.handleXDSClientUpdate()`.
@@ -468,8 +470,13 @@ func (x *edsBalancer) handleEDSUpdate(resp xdsclient.EndpointsUpdate, err error)
 - For each priority, `handleXDSClientUpdate()` calls `edsImpl.handleEDSResponsePerPriority()` to initialize the connection with endpoint.
 - `handleEDSResponse()` deletes priorities that are removed in the latest response, and also closes the `bgwc`.
 - At last, if priority was added/removed, `handleEDSResponse()` calls `edsImpl.handlePriorityChange()` to change the balancer group.
+  - For first EDS response, `edsImpl.handlePriorityChange()` will calls `edsImpl.startPriority()`.
+  - `edsImpl.startPriority()` sets `priorityInUse` to specified parameter.
+  - `edsImpl.startPriority()` calls `p.stateAggregator.Start()` to start the `Aggregator`.
+  - `edsImpl.startPriority()` calls `p.bg.Start()` to start the `BalancerGroup`.
+  - `edsImpl.startPriority()` also starts a timer to fall to next priority after timeout.
 
-Next, Let's discuss the behaviour of `edsImpl.handleEDSResponsePerPriority()`. Please refer to [Connect to upstream server](conn.md)  for detail.
+Next, Let's discuss the behaviour of `edsImpl.handleEDSResponsePerPriority()`. Please continue to read [Connect to upstream server](conn.md)  for detail.
 
 ```go
 func (x *edsBalancer) handleXDSClientUpdate(update *edsUpdate) {
@@ -574,5 +581,141 @@ func (edsImpl *edsBalancerImpl) handleEDSResponse(edsResp xdsclient.EndpointsUpd
     if priorityChanged {
         edsImpl.handlePriorityChange()
     }
+}
+
+// handlePriorityChange handles priority after EDS adds/removes a
+// priority.
+//
+// - If all priorities were deleted, unset priorityInUse, and set parent
+// ClientConn to TransientFailure
+// - If priorityInUse wasn't set, this is either the first EDS resp, or the
+// previous EDS resp deleted everything. Set priorityInUse to 0, and start 0.
+// - If priorityInUse was deleted, send the picker from the new lowest priority
+// to parent ClientConn, and set priorityInUse to the new lowest.
+// - If priorityInUse has a non-Ready state, and also there's a priority lower
+// than priorityInUse (which means a lower priority was added), set the next
+// priority as new priorityInUse, and start the bg.
+func (edsImpl *edsBalancerImpl) handlePriorityChange() {
+    edsImpl.priorityMu.Lock()
+    defer edsImpl.priorityMu.Unlock()
+
+    // Everything was removed by EDS.
+    if !edsImpl.priorityLowest.isSet() {
+        edsImpl.priorityInUse = newPriorityTypeUnset()
+        // Stop the init timer. This can happen if the only priority is removed
+        // shortly after it's added.
+        if timer := edsImpl.priorityInitTimer; timer != nil {
+            timer.Stop()
+            edsImpl.priorityInitTimer = nil
+        }
+        edsImpl.cc.UpdateState(balancer.State{ConnectivityState: connectivity.TransientFailure, Picker: base.NewErrPicker(errAllPrioritiesRemoved)})
+        return
+    }
+
+    // priorityInUse wasn't set, use 0.
+    if !edsImpl.priorityInUse.isSet() {
+        edsImpl.logger.Infof("Switching priority from unset to %v", 0)
+        edsImpl.startPriority(newPriorityType(0))
+        return
+    }
+
+    // priorityInUse was deleted, use the new lowest.
+    if _, ok := edsImpl.priorityToLocalities[edsImpl.priorityInUse]; !ok {
+        oldP := edsImpl.priorityInUse
+        edsImpl.priorityInUse = edsImpl.priorityLowest
+        edsImpl.logger.Infof("Switching priority from %v to %v, because former was deleted", oldP, edsImpl.priorityInUse)
+        if s, ok := edsImpl.priorityToState[edsImpl.priorityLowest]; ok {
+            edsImpl.cc.UpdateState(*s)
+        } else {
+            // If state for priorityLowest is not found, this means priorityLowest was
+            // started, but never sent any update. The init timer fired and
+            // triggered the next priority. The old_priorityInUse (that was just
+            // deleted EDS) was picked later.
+            //
+            // We don't have an old state to send to parent, but we also don't
+            // want parent to keep using picker from old_priorityInUse. Send an
+            // update to trigger block picks until a new picker is ready.
+            edsImpl.cc.UpdateState(balancer.State{ConnectivityState: connectivity.Connecting, Picker: base.NewErrPicker(balancer.ErrNoSubConnAvailable)})
+        }
+        return
+    }
+
+    // priorityInUse is not ready, look for next priority, and use if found.
+    if s, ok := edsImpl.priorityToState[edsImpl.priorityInUse]; ok && s.ConnectivityState != connectivity.Ready {
+        pNext := edsImpl.priorityInUse.nextLower()
+        if _, ok := edsImpl.priorityToLocalities[pNext]; ok {
+            edsImpl.logger.Infof("Switching priority from %v to %v, because latter was added, and former wasn't Ready")
+            edsImpl.startPriority(pNext)
+        }
+    }
+}
+
+// startPriority sets priorityInUse to p, and starts the balancer group for p.
+// It also starts a timer to fall to next priority after timeout.
+//
+// Caller must hold priorityMu, priority must exist, and edsImpl.priorityInUse
+// must be non-nil.
+func (edsImpl *edsBalancerImpl) startPriority(priority priorityType) {
+    edsImpl.priorityInUse = priority
+    p := edsImpl.priorityToLocalities[priority]
+    // NOTE: this will eventually send addresses to sub-balancers. If the
+    // sub-balancer tries to update picker, it will result in a deadlock on
+    // priorityMu in the update is handled synchronously. The deadlock is
+    // currently avoided by handling balancer update in a goroutine (the run
+    // goroutine in the parent eds balancer). When priority balancer is split
+    // into its own, this asynchronous state handling needs to be copied.
+    p.stateAggregator.Start()
+    p.bg.Start()
+    // startPriority can be called when
+    // 1. first EDS resp, start p0
+    // 2. a high priority goes Failure, start next
+    // 3. a high priority init timeout, start next
+    //
+    // In all the cases, the existing init timer is either closed, also already
+    // expired. There's no need to close the old timer.
+    edsImpl.priorityInitTimer = time.AfterFunc(defaultPriorityInitTimeout, func() {
+        edsImpl.priorityMu.Lock()
+        defer edsImpl.priorityMu.Unlock()
+        if !edsImpl.priorityInUse.isSet() || !edsImpl.priorityInUse.equal(priority) {
+            return
+        }
+        edsImpl.priorityInitTimer = nil
+        pNext := priority.nextLower()
+        if _, ok := edsImpl.priorityToLocalities[pNext]; ok {
+            edsImpl.startPriority(pNext)
+        }
+    })
+}
+
+// Start starts the aggregator. It can be called after Close to restart the
+// aggretator.
+func (wbsa *Aggregator) Start() {
+    wbsa.mu.Lock()
+    defer wbsa.mu.Unlock()
+    wbsa.started = true
+}
+
+// Start starts the balancer group, including building all the sub-balancers,
+// and send the existing addresses to them.
+//
+// A BalancerGroup can be closed and started later. When a BalancerGroup is
+// closed, it can still receive address updates, which will be applied when
+// restarted.
+func (bg *BalancerGroup) Start() {
+    bg.incomingMu.Lock()
+    bg.incomingStarted = true
+    bg.incomingMu.Unlock()
+
+    bg.outgoingMu.Lock()
+    if bg.outgoingStarted {
+        bg.outgoingMu.Unlock()
+        return
+    }
+
+    for _, config := range bg.idToBalancerConfig {
+        config.startBalancer()
+    }
+    bg.outgoingStarted = true
+    bg.outgoingMu.Unlock()
 }
 ```
