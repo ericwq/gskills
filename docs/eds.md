@@ -366,6 +366,8 @@ func (b *cdsBalancer) handleClusterUpdate(cu xdsclient.ClusterUpdate, err error)
   - `edsbalancer.EDSConfig` uses `update.cds.ServiceName` as the value of `EDSServiceName` field. `update.cds.ServiceName` gets value from CDS response.
   - `UpdateClientConnState()` sends `ccState` message to channel `x.grpcUpdate`, which is of type `grpcUpdate chan interface{}`
 
+EDS balancer shares the `cc` field with CDS balancer's `ccw` field, which is of type `ccWrapper`. You will need this information in the connect to upstream server section.
+
 Now the EDS balancer is created and running. The EDS balancer also got a message on channel `x.grpcUpdate`. Please read [Initialize endpoints](eds2.md) for the next stage process.
 
 ```go

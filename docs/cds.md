@@ -388,6 +388,15 @@ In `applyServiceConfigAndBalancer()`:
     - Starts a new goroutine `ccb.watcher()`. `watcher()` waits for the `ccb.scBuffer.Get()` channel. Upon receive the `scStateUpdate` message, `watcher()` calls `ccb.balancer.UpdateSubConnState()`
     - Create the new balancer by calling `Build()`. For `"xds_cluster_manager_experimental"` balancer. `builder.Build()` will be called to create the CDS cluster manager. It's a balancer to manage the children balancers.
 
+In `builder.Build()`,
+
+- The balancer group `b.bg` is initialized.
+- The state aggregator `b.stateAggregator` is also initialized.
+- The balancer group is start by `b.bg.Start()`.
+- The `cc` field of balancer group is `ccBalancerWrapper`.
+
+The cluster manager contains a balancer group and state aggregator. The balancer group has one or more CDS balancer. You will see it in next section.
+
 ```go
 func (cc *ClientConn) applyServiceConfigAndBalancer(sc *ServiceConfig, configSelector iresolver.ConfigSelector, addrs []resolver.Address) {
     if sc == nil {

@@ -14,9 +14,18 @@
 
 ## Connect to upstream server
 
-EDS response endpoints is re-ordered by priority. Each priority has a balancer group. Each priority contains several localities. Each locality contains several endpoints. Each locality has a sub-balancer for those endpoints. Each locality is a member of the previous balancer group.
+EDS response endpoints is re-ordered by priority.
 
-This is the second article of EDS processing. xDS protocol is a complex protocol. Compare with `pickfirst` balancer, xDS needs more steps to connect with the upstream server. After the [Process EDS update](eds2.md#process-eds-update), we are ready to initialize endpoints by priority. Only the priority in use is started, other priority locality is waiting for start.
+- EDS response may contains several priorities.
+- Each priority has a balancer group.
+- Each priority may contains several localities.
+- Each locality contains several endpoints.
+- Each locality has a sub-balancer for those endpoints.
+- Each locality is a member of the previous balancer group.
+
+Only the priority in use is started, other priority is waiting for start.
+
+This is the second article of EDS processing. xDS protocol is a complex protocol. Compare with `pickfirst` balancer, xDS needs more steps to connect with the upstream server. After the [Process EDS update](eds2.md#process-eds-update), we are ready to initialize endpoints by priority.
 
 In this stage, we continue the discussion of xDS protocol: connect to upstream server.  Here is the map for this stage. In this map:
 
@@ -26,6 +35,8 @@ In this stage, we continue the discussion of xDS protocol: connect to upstream s
 - Right red dot represents there is a extension map for that box.
 
 ![xDS protocol: 7](../images/images.015.png)
+
+`handleEDSResponse()` creates a balancer group for each priority. Then `handleEDSResponse()` calls `edsImpl.handleEDSResponsePerPriority()` for each priority.
 
 In `handleEDSResponse()`, there are some important fields need to be mentioned.
 
@@ -337,6 +348,7 @@ After sub-balancer is created and added to the balancer group, `handleEDSRespons
 - Here, `config` is of type `*subBalancerWrapper`.
 - `bg.idToBalancerConfig[id]` is created in `BalancerGroup.Add()`.
 - `config.updateClientConnState()` is actually `subBalancerWrapper.updateClientConnState()`.
+- Please note the parameter of `UpdateClientConnState()` contains the endpoints address.
 
 ```go
 // UpdateClientConnState handles ClientState (including balancer config and
@@ -354,8 +366,9 @@ func (bg *BalancerGroup) UpdateClientConnState(id string, s balancer.ClientConnS
 In `subBalancerWrapper.updateClientConnState()`,  `sbc.ccState` is set. While this sub-balancer is not started, the `sbc.balancer` field is nil.
 
 - Here the important thing is the `sbc.ccState` field is set.
+- Please note the `sbc.ccState` contains the endpoints address.
 
-Add sub balancer is initialized and ready to be started.
+Now all the sub balancers are initialized and ready to be started.
 
 ```go
 func (sbc *subBalancerWrapper) updateClientConnState(s balancer.ClientConnState) error {
@@ -546,7 +559,11 @@ func (bg *BalancerGroup) Start() {
 - `baseBalancer` is assigned to `sbc.balancer`. Which means `sbc.balancer` is of type `baseBalancer`.
 - Please note that `startBalancer()` uses `sbc` as the `cc ClientConn` parameter, which means `baseBalancer.cc` is of type `subBalancerWrapper`.  
 
-`subBalancerWrapper.startBalancer()` calls `b.UpdateClientConnState()`, which is actually `baseBalancer.UpdateClientConnState()`.
+In previous `subBalancerWrapper.updateClientConnState()`, `sbc.ccState` is set. So `subBalancerWrapper.startBalancer()` calls `b.UpdateClientConnState()`, which is actually `baseBalancer.UpdateClientConnState()`.
+
+- `baseBalancer.UpdateClientConnState()` starts the balancer by activate the connection to upstream server.
+- Please note that the parameter of `UpdateClientConnState()` is `*sbc.ccState`.
+- In previous `subBalancerWrapper.updateClientConnState()`, `sbc.ccState` contains the endpoints address.
 
 ```go
 func (sbc *subBalancerWrapper) startBalancer() {
