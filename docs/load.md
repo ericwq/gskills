@@ -102,7 +102,7 @@ type State struct {
 `exampleResolver` is created to resolve `resolver.example.grpc.io` to `localhost:50051`.
 
 - The start point is the `init()` function. In `init()`,  `exampleResolverBuilder` is registered in resolver map `map[string]Builder`.
-- In [newCCResolverWrapper()](dial.md#newccresolverwrapper), `DialContext()` parses the `target` string and calls `getResolver()` to find the registered `resolver.Builder`.
+- In [Determine resolver builder](dial.md#determine-resolver-builder), `DialContext()` parses the `target` string and calls `getResolver()` to find the registered `resolver.Builder`.
 - Next, `DialContext()` calls `newCCResolverWrapper()`, in `newCCResolverWrapper()`, `rb.Build()` will be called to build the resolver.
 - In our case, `rb.Build()` is actually `exampleResolverBuilder.Build()`.  
 - In `exampleResolverBuilder.Build()`, `r.start()` will be called.
@@ -115,9 +115,9 @@ type State struct {
 ```  
 
 - where `exampleServiceName="resolver.example.grpc.io"` and `backendAddr="localhost:50051"`
-- `exampleResolverBuilder.start()` will calls [ccResolverWrapper.UpdateState()](dial.md#ccresolverwrapperupdatestate), a.k.a `r.cc.UpdateState()` to update the `resolver.State` to `ccResolverWrapper`,  
+- `exampleResolverBuilder.start()` will calls [Create resolver](dial.md#create-resolver), a.k.a `r.cc.UpdateState()` to update the `resolver.State` to `ccResolverWrapper`,  
 - the new `resolver.State` whose `Addresses` field has value: `["localhost:50051"]`.  
-- In [ccResolverWrapper.UpdateState()](dial.md#ccresolverwrapperupdatestate), `ccr.poll()` goroutine will call `ccr.resolveNow()`.  
+- In [Create resolver](dial.md#create-resolver), `ccr.poll()` goroutine will call `ccr.resolveNow()`.  
 - `ccr.resolveNow()` calls `ccr.resolver.ResolveNow()`, which actually calls`exampleResolver.ResolveNow()`.
 - In our case, `exampleResolver.ResolveNow()` do nothing. It's the designed behavior of the `exampleResolver`.
 - Next, following the [Client Dial](dial.md) process, a new connection with the `localhost:50051` will be established.
@@ -858,7 +858,7 @@ func (ccr *ccResolverWrapper) ParseServiceConfig(scJSON string) *serviceconfig.P
 
 ### defaultServiceConfig
 
-Now `defaultServiceConfig` is set. When client dials in [ClientConn.updateResolverState()](dial.md#clientconnupdateresolverstate), `maybeApplyDefaultServiceConfig()` will be called to utilize the `defaultServiceConfig`.
+Now `defaultServiceConfig` is set. When client dials in [Apply service config](dial.md#apply-service-config), `maybeApplyDefaultServiceConfig()` will be called to utilize the `defaultServiceConfig`.
 
 - In `maybeApplyDefaultServiceConfig()`, if `cc.dopts.defaultServiceConfig` is not nil, `cc.applyServiceConfigAndBalancer()` will be called and `cc.dopts.defaultServiceConfig` will be passed as parameter.
 - In `cc.applyServiceConfigAndBalancer()`, `newBalancerName` will get the value from `cc.sc.lbConfig.name` or `*cc.sc.LB` or `PickFirstBalancerName` or `grpclbName`.
@@ -866,7 +866,7 @@ Now `defaultServiceConfig` is set. When client dials in [ClientConn.updateResolv
 - In our case, for the second client, `newBalancerName` will get the value from `cc.sc.lbConfig.name`, which is `round_robin`
 - At the last, `switchBalancer()` will be called to find the balancer builder from balancer map and `newCCBalancerWrapper()` will be called to initialize balancer.
 
-What's the relationship between `defaultServiceConfig` and `resolver.State.ServiceConfig`? In [ClientConn.updateResolverState()](dial.md#clientconnupdateresolverstate),
+What's the relationship between `defaultServiceConfig` and `resolver.State.ServiceConfig`? In [Apply service config](dial.md#apply-service-config),
 
 - If the parameter `s resolver.State`'s `s.ServiceConfig.Config` field is not nil, which means dns resolver does fill in the `ServiceConfig.Config` field.
 - `ClientConn.updateResolverState()` will use the service config to initialize the balancer.
@@ -979,11 +979,11 @@ func (cc *ClientConn) switchBalancer(name string) {
 
 ### UpdateClientConnState()
 
-At Client Dial [ClientConn.updateResolverState()](dial.md#clientconnupdateresolverstate) section, `ccBalancerWrapper.updateClientConnState()` will be called to establish the connection with the resolved target.
+At Client Dial [Apply service config](dial.md#apply-service-config) section, `ccBalancerWrapper.updateClientConnState()` will be called to establish the connection with the resolved target.
 
 - `ccBalancerWrapper.updateClientConnState()` calls `ccb.balancer.UpdateClientConnState()`. The balancer is determined by the run time value.
 - For `pick_first` balancer, `pickfirstBalancer.UpdateClientConnState()` will be called.
-  - The behavior is detailed in [Here](dial.md#ccbalancerwrapperupdateclientconnstate).
+  - The behavior is detailed in [Update client connection](dial.md#update-client-connection).
   - `pick_first` balancer will call `b.cc.NewSubConn()`, `b.sc.Connect()` and `b.cc.UpdateState()` to establish a transport connection
   - `pick_first` balancer calls `b.cc.UpdateState()`, which actually calls `ccBalancerWrapper.UpdateState()`
 - For `round_robin` balancer, `baseBalancer.UpdateClientConnState()` will be called
@@ -1112,11 +1112,11 @@ func (pw *pickerWrapper) updatePicker(p balancer.Picker) {
 
 ### UpdateSubConnState()
 
-At Client Dial [newCCBalancerWrapper()](dial.md#newccbalancerwrapper) section, goroutine `ccb.watcher()` is waiting for the incoming message to monitor the sub connection status. In `ccb.watcher()`, upon receive the `scStateUpdat`:
+At Client Dial [Initialize balancer](dial.md#initialize-balancer) section, goroutine `ccb.watcher()` is waiting for the incoming message to monitor the sub connection status. In `ccb.watcher()`, upon receive the `scStateUpdat`:
 
 - `ccb.balancer.UpdateSubConnState()` will be called, The balancer is determined by the run time value.
 - For `pick_first` balancer, `pickfirstBalancer.UpdateClientConnState()` will be called.
-  - The behavior is detailed in [Here](dial.md#newccbalancerwrapper).
+  - The behavior is detailed in [Initialize balancer](dial.md#initialize-balancer).
   - `pickfirstBalancer.UpdateClientConnState()` calls `b.cc.UpdateState`, which actually calls `ccBalancerWrapper.UpdateState()`.
 - For `round_robin` balancer, `baseBalancer.UpdateSubConnState()` will be called.
   - In `baseBalancer.UpdateSubConnState()`,
