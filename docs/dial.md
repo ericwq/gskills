@@ -222,6 +222,42 @@ func DialContext(ctx context.Context, target string, opts ...DialOption) (conn *
 
     return cc, nil
 }
+
+// GetState returns the connectivity.State of ClientConn.
+//
+// Experimental
+//
+// Notice: This API is EXPERIMENTAL and may be changed or removed in a
+// later release.
+func (cc *ClientConn) GetState() connectivity.State {
+    return cc.csMgr.getState()
+}
+
+func (csm *connectivityStateManager) getState() connectivity.State {
+    csm.mu.Lock()
+    defer csm.mu.Unlock()
+    return csm.state
+}
+
+// WaitForStateChange waits until the connectivity.State of ClientConn changes from sourceState or
+// ctx expires. A true value is returned in former case and false in latter.
+//
+// Experimental
+//
+// Notice: This API is EXPERIMENTAL and may be changed or removed in a
+// later release.
+func (cc *ClientConn) WaitForStateChange(ctx context.Context, sourceState connectivity.State) bool {
+    ch := cc.csMgr.getNotifyChan()
+    if cc.csMgr.getState() != sourceState {
+        return true
+    }
+    select {
+    case <-ctx.Done():
+        return false
+    case <-ch:
+        return true
+    }
+}
 ```
 
 ### Create resolver
@@ -640,9 +676,7 @@ func (*pickfirstBuilder) Name() string {
 
 `ccb.watcher()` calls `ccb.balancer.UpdateSubConnState()` to update the balancer connection state.
 
-- `ccb.balancer.UpdateSubConnState()` is actually `pickfirstBalancer.UpdateSubConnState()`.
-- In `pickfirstBalancer.UpdateSubConnState()`, `b.cc.UpdateState()` is called to forward the picker and state.
-- `b.cc.UpdateState()` is actually `ccBalancerWrapper.UpdateState()`.
+- In this case, the balancer is `pickfirstBalancer`. `ccb.balancer.UpdateSubConnState()` is actually `pickfirstBalancer.UpdateSubConnState()`.
 
 ```go
 // watcher balancer functions sequentially, so the balancer can be implemented
@@ -676,7 +710,18 @@ func (ccb *ccBalancerWrapper) watcher() {
         }
     }
 }
+```
 
+In `pickfirstBalancer.UpdateSubConnState()`,
+
+- `UpdateSubConnState()` updates `b.state` according to `s.ConnectivityState`.
+- `UpdateSubConnState()` calls `b.cc.UpdateState()` to forward the picker and state.
+- `b.cc.UpdateState()` is actually `ccBalancerWrapper.UpdateState()`.
+- Note the `balancer.State` parameter contains both `ConnectivityState` and `Picker`.
+- For `connectivity.Ready` case, `Picker` contains the established sub-connection.
+- For other case, `Picker` only contains error.
+
+```go
 func (b *pickfirstBalancer) UpdateSubConnState(sc balancer.SubConn, s balancer.SubConnState) {
     if logger.V(2) {
         logger.Infof("pickfirstBalancer: UpdateSubConnState: %p, %v", sc, s)
@@ -705,15 +750,18 @@ func (b *pickfirstBalancer) UpdateSubConnState(sc balancer.SubConn, s balancer.S
         })
     }
 }
-
 ```
 
 In `ccBalancerWrapper.UpdateState()`,
 
-- `ccb.cc.csMgr.updateState()` will be called to notify the new state to `connectivityStateManager`.
-- `ccb.cc.blockingpicker.updatePicker()` will be called to update the `Picker`.
+- `UpdateState()` calls `ccb.cc.csMgr.updateState()`, which is `connectivityStateManager.updateState()`.
+- `connectivityStateManager.updateState()` updates the `csm.state` field.
+- `UpdateState()` calls `ccb.cc.blockingpicker.updatePicker()`, which is `pickerWrapper.updatePicker()`.
+- `pickerWrapper.updatePicker()` updates the `pw.picker` field.
 
-Next, Let's discuss `ccBalancerWrapper.updateClientConnState()`
+For blocking dial, `connectivityStateManager.updateState()` sets the `csm.state` to `connectivity.Ready`. That will stop the blocking wait.
+
+Next, Let's discuss `ccBalancerWrapper.updateClientConnState()`.
 
 ```go
 func (ccb *ccBalancerWrapper) UpdateState(s balancer.State) {
@@ -941,7 +989,7 @@ func (ac *addrConn) connect() error {
 }
 ```
 
-`ac.updateConnectivityState()` upstates `ac.state` and calls `ac.cc.handleSubConnStateChange()` to finish the job.
+`updateConnectivityState()` upstates `ac.state` and calls `ac.cc.handleSubConnStateChange()` to finish the job.
 
 - `ac.cc.handleSubConnStateChange()` is `ClientConn.handleSubConnStateChange()`.
 - Note the `connectivity.State` is forwarded to `ClientConn.handleSubConnStateChange()`.
@@ -958,7 +1006,7 @@ func (ac *addrConn) updateConnectivityState(s connectivity.State, lastErr error)
 }
 ```
 
-`ClientConn.handleSubConnStateChange()` calls `cc.balancerWrapper.handleSubConnStateChange()` to finish the job.
+`handleSubConnStateChange()` calls `cc.balancerWrapper.handleSubConnStateChange()` to finish the job.
 
 - `cc.balancerWrapper.handleSubConnStateChange()` is `ccBalancerWrapper.handleSubConnStateChange()`.
 - Note the `connectivity.State` is forwarded to `ccBalancerWrapper.handleSubConnStateChange()`.
@@ -977,7 +1025,7 @@ func (cc *ClientConn) handleSubConnStateChange(sc balancer.SubConn, s connectivi
 }
 ```
 
-`cc.balancerWrapper.handleSubConnStateChange()` creates `scStateUpdate` and calls `ccb.scBuffer.Put()` to send the state update message to `ccb.watcher()`.
+`handleSubConnStateChange()` creates `scStateUpdate` and calls `ccb.scBuffer.Put()` to send the state update message to `ccb.watcher()`.
 
 - `ccb.scBuffer` is an object of type `buffer.Unbounded`. `ccb.scBuffer.Put()` is actually `Unbounded.Put()`.
 - `Unbounded.Put()` sends the message to a channel in `Unbounded` struct.
@@ -1199,7 +1247,7 @@ func (ac *addrConn) startHealthCheck(ctx context.Context) {
 }
 ```
 
-`tryAllAddrs()` is called with the specified `connectDeadline` parameter.
+`addrConn.tryAllAddrs()` is called with the specified `connectDeadline` parameter.
 
 - `tryAllAddrs()` calls `ac.createTransport()`, which is actually `addrConn.createTransport()`.
 - Note the `connectDeadline` parameter is also passed to `ac.createTransport()`.
