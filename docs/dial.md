@@ -2,56 +2,78 @@
 
 - [Balancer and Resolver API](#balancer-and-resolver-api)
 - [Dial process part I](#dial-process-part-i)
-  - [newCCResolverWrapper()](#newccresolverwrapper)
-  - [ccResolverWrapper.UpdateState()](#ccresolverwrapperupdatestate)
-  - [ClientConn.updateResolverState()](#clientconnupdateresolverstate)
-  - [newCCBalancerWrapper()](#newccbalancerwrapper)
-  - [ccBalancerWrapper.updateClientConnState()](#ccbalancerwrapperupdateclientconnstate)
+  - [Determine resolver builder](#determine-resolver-builder)
+  - [Create resolver](#create-resolver)
+  - [Apply service config](#apply-service-config)
+  - [Initialize balancer](#initialize-balancer)
+  - [Update client connection](#update-client-connection)
 - [Dial process part II](#dial-process-part-ii)
-  - [addrConn.connect()](#addrconnconnect)
-  - [addrConn.resetTransport()](#addrconnresettransport)
+  - [Update connectivity state](#update-connectivity-state)
+  - [Create transport](#create-transport)
 
-Client dial is the process to establish the connection with the target server. However the mechanism is very complex. Let's try to make it clear for reader.
+Client dial is the process to establish the connection with the target server. Client dial is a necessary step before any RPC happens.
 
-In this discussion, we will use the `passthrough` resolver and `pickfirst` balancer. They are the default resolver and balancer. For other resolver and balancer, The dial process is similar with little difference.
+In the following discussion, we use the `passthrough` resolver and `pickfirst` balancer. They are the default resolver and balancer. The simple resolver and balancer can help you to understand the dial process quickly. For other resolver and balancer, The dial process is similar with little difference.
 
 ## Balancer and Resolver API
 
 There is an [official design document](https://github.com/grpc/proposal/blob/master/L9-go-resolver-balancer-API.md) about the resolver and balancer API. But it's a little bit older than the code. The following diagram is made from the recent source code.
 
-Resolver watches for the updates on the specified target. Updates include address updates and service config updates. There is also a `resolver.ClientConn` interface which contains the callbacks for resolver to notify any updates to the gRPC ClientConn. `resolver.Builder` intercase creates a resolver that will be used to watch name resolution updates. There is a resolver map stores all the registered resolver builders.
+`Resolver` watches for the updates on the specified target. Updates include address updates and service config updates.
 
-Balancer takes input from gRPC, manages SubConns, collects and aggregates the connectivity states. It also generates and updates the Picker used by gRPC to pick SubConns for RPCs. There is also a `balancer.ClientConn` interface which represents a gRPC ClientConn. `balancer.Builder` interface helps to creates a balancer. `balancer.SubConn` represents a gRPC sub connection. There is a balancer map stores all the registered balancer builders.
+- `resolver.ClientConn` interface which contains the callbacks for resolver to notify any updates to the gRPC.
+- `resolver.Builder` interface creates resolver.
+- There is a resolver map stores all the registered resolver builders.
 
-`ClientConn` has a connection pool to store all the connections. `ccResolverWrapper` implements `resolver.ClientConn` `ccBalancerWrapper` implements `balancer.ClientConn` `acBalancerWrapper` implements `balancer.SubConn`
+`Balancer` takes input from gRPC, manages `SubConn`, collects and aggregates the connectivity states. It also generates and updates the Picker used by gRPC to pick `SubConn` for RPCs.
 
-`Dial()` will use most parts of this diagram. You can verify this diagram from the following dial example.
+- `balancer.ClientConn` interface represents a balancer view of `ClientConn`.
+- `balancer.Builder` interface helps to creates a balancer.
+- `balancer.Picker` interface is used by gRPC to pick a `SubConn` to send an RPC.
+- `balancer.SubConn` interface represents a gRPC sub connection.
+- There is a balancer map stores all the registered balancer builders.
+
+Balancer is expected to generate a new picker from its snapshot every time its internal state has changed. The pickers used by gRPC can be updated by `ClientConn.UpdateState()`.
+
+`ClientConn` represents a virtual connection to a conceptual endpoint, to perform RPCs. A `ClientConn` is free to have zero or more actual connections to the endpoint based on configuration, load, etc. It is also free to determine which actual endpoints to use and may change it every RPC, permitting client-side load balancing.
+
+- `ClientConn` has a connection pool to store all the connections.
+- `ccResolverWrapper` implements `resolver.ClientConn`.
+- `ccBalancerWrapper` implements `balancer.ClientConn`.
+- `acBalancerWrapper` implements `balancer.SubConn`.
+- `pickerWrapper` implements `balancer.Picker`.
+
+`Dial()` uses most parts of this diagram. You can verify this diagram from the following dial example.
+
 ![Balancer and Resolver API](../images/images.008.png)
 
 ## Dial process part I
 
-`Dial` is a complex process. The following diagram is a map to prevent you from lost in a mass of code. I did lost many times. And this is only part I. Yes, there is part II.
+`Dial` is a complex process. The following diagram is a map to prevent you from lost in a mass of code. I did lost many times. And this is part I. Yes, there is part II.
+
+![Dial part I](../images/images.006.png)
 
 - yellow box represents the important type and method/function.
 - green box represents a function run in a dedicated goroutine.
-- dash box represents the important type/struct in our previous API diagram.
 - arrow represents the call direction and order.
+- Left red dot represents the box is a continue part from other diagram.
+- Right red dot represents there is a extension diagram for that box.
 
-![Dial part I](../images/images.006.png)
-Here is the client application code. Please note `addr` default value is `localhost:50051` Client `Dial()` try to create a connection to the target server.
+Here is the client [application code](https://github.com/grpc/grpc-go/blob/master/examples/features/authentication/client/main.go). Please note `addr` default value is `localhost:50051`. `grpc.Dial()` tries to create a connection to the target server.
 
 ```go
 var addr = flag.String("addr", "localhost:50051", "the address to connect to")
-func main() {                                                                                          
-    flag.Parse()                                         
-                                                         
-    // Set up the credentials for the connection.             
-    perRPC := oauth.NewOauthAccess(fetchToken())                             
+
+func main() {
+    flag.Parse()
+
+    // Set up the credentials for the connection.
+    perRPC := oauth.NewOauthAccess(fetchToken())
     creds, err := credentials.NewClientTLSFromFile(data.Path("x509/ca_cert.pem"), "x.test.example.com")
-    if err != nil {                                                          
-        log.Fatalf("failed to load credentials: %v", err)                 
-    }                                                                     
-    opts := []grpc.DialOption{                                         
+    if err != nil {
+        log.Fatalf("failed to load credentials: %v", err)
+    }
+    opts := []grpc.DialOption{
         // In addition to the following grpc.DialOption, callers may also use
         // the grpc.CallOption grpc.PerRPCCredentials with the RPC invocation
         // itself.
@@ -72,23 +94,36 @@ func main() {
 
     callUnaryEcho(rgc, "hello world")
 }
+
+func callUnaryEcho(client ecpb.EchoClient, message string) {
+    ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+    defer cancel()
+    resp, err := client.UnaryEcho(ctx, &ecpb.EchoRequest{Message: message})
+    if err != nil {
+        log.Fatalf("client.UnaryEcho(_) = _, %v: ", err)
+    }
+    fmt.Println("UnaryEcho: ", resp.Message)
+}
 ```
 
 ### newCCResolverWrapper()
 
-- Client application calls `Dial()` .
-- `Dial()` calls `DialContext()`
-- In our case, the default resolver is `passthrough` Because the `cc.parsedTarget.Scheme` is empty string.
-- `DialContext()` calls `newCCResolverWrapper()`
-  - gRPC provide dns resolver, unix resolver, passthrough resolver, xds resolver
-  - by default, gRPC registers three resovler: dns, unix and passthrough resolver
-- After creates the `ccResolverWrapper` `DialContext()` will
-  - just return for non-blocking dial,
-  - or  wait the state changing for a blocking dial
-  - for blocking dial mode,
-    - in the for loop, `cc.GetState()` and `cc.WaitForStateChange()` working together to monitor the state of `csMgr    *connectivityStateManager`
-    - until the `connectivity` is `Ready` the for loop break.
-- Let's continue the discussion of `newCCResolverWrapper()`
+### Determine resolver builder
+
+- Client application calls `Dial()`.
+- `Dial()` calls `DialContext()`.
+- In our case, the default resolver is `passthrough`.
+  - Because the `cc.parsedTarget.Scheme` is empty string. `resolverBuilder` is nil.
+  - In this case, the default scheme is used, which is `passthrough`.
+- `DialContext()` calls `newCCResolverWrapper()` to create the resolver.
+  - gRPC provides `dns` resolver, `unix` resolver, `passthrough` resolver, `xds` resolver.
+  - By default, gRPC registers three resolvers: `dns`, `unix` and `passthrough` resolver.
+  - In this case, `resolverBuilder` is `passthroughBuilder`.
+- After creates the `ccResolverWrapper`, `DialContext()` can just return for non-blocking dial, or wait the state changing for blocking dial.
+  - For blocking dial, `cc.GetState()` and `cc.WaitForStateChange()` working together to monitor the state of connection.
+  - The for loop stops until `s == connectivity.Ready`.
+
+Let's continue the discussion of `newCCResolverWrapper()`
 
 ```go
 // Dial creates a client connection to the given target.
@@ -128,7 +163,8 @@ func DialContext(ctx context.Context, target string, opts ...DialOption) (conn *
     for _, opt := range opts {
         opt.apply(&cc.dopts)
     }
-    ...
+
++-- 96 lines: chainUnaryClientInterceptors(cc)··············································································································
 
     // Determine the resolver to use.
     cc.parsedTarget = grpcutil.ParseTarget(cc.target, cc.dopts.copts.Dialer != nil)
@@ -148,7 +184,8 @@ func DialContext(ctx context.Context, target string, opts ...DialOption) (conn *
             return nil, fmt.Errorf("could not get resolver for default scheme: %q", cc.parsedTarget.Scheme)
         }
     }
-    ...
+
++-- 43 lines: creds := cc.dopts.copts.TransportCredentials··································································································
 
     // Build the resolver.
     rWrapper, err := newCCResolverWrapper(cc, resolverBuilder)
@@ -191,28 +228,37 @@ func DialContext(ctx context.Context, target string, opts ...DialOption) (conn *
 
 ### ccResolverWrapper.UpdateState()
 
+### Create resolver
+
 - `newCCResolverWrapper()` calls `resolver.Build()` to build the resolver
-  - `ccResolverWrapper` is a wrapper on top of cc for resolvers.
+  - `ccResolverWrapper` is a wrapper on top of `cc` for resolvers.
   - `ccResolverWrapper` implements `resolver.ClientConn` interface.
-  - `resolver.ClientConn` contains the callbacks for resolver to notify any updates to the gRPC ClientConn.
+  - `resolver.ClientConn` contains the callbacks for resolver to notify any updates to the gRPC `ClientConn`.
 
-- For `resolver.Build()` `passthroughBuilder.Build()` will be called
-  - `passthroughBuilder.Build()` creates `passthroughResolver` and calls its `r.start()` method
-  - `r.start()` calls `r.cc.UpdateState()` method with the new `State` parameter
-  - the new `State` only contains `State.Addresses=[]resolver.Address{{Addr: "localhost:50051"}}`
+- For `resolver.Build()`, the `passthroughBuilder.Build()` will be called.
+  - `Build()` creates `passthroughResolver` and calls its `r.start()` method.
+  - `r.start()` calls `r.cc.UpdateState()` method with the new `State` parameter.
+  - the new `State` parameter only contains `State.Addresses=[]resolver.Address{{Addr: "localhost:50051"}}`
 
-- For `r.cc.UpdateState()` `ccResolverWrapper.UpdateState()` will be called.
-  - please note the difference between `ClientConn` struct and `resolver.ClientConn` interface
-  - `ccResolverWrapper.UpdateState()` calls `ccr.cc.updateResolverState()`
-  - `ccResolverWrapper.UpdateState()` calls `ccr.poll()` to start a goroutine
-  - in the `ccr.poll()` goroutine
-    - `ccr.resolveNow()` will be called to send a signal to resolver.
-    - `ccr.resolveNow()` calls `ccr.resolver.ResolveNow()` which actually calls `passthroughResolver.ResolveNow()` While `passthroughResolver.ResolveNow()` do nothing at all.
-    - `ccr.poll()` will be paused by the `Timer` after the `Timer` is up, a new `Timer` will start again.
-    - `ccr.poll()` stops if `ccr.polling` is closed or `ccr.done.Done()` is closed.
-    - one way to stop `ccr.poll()` goroutine is to call `ccr.poll()` again with the `balancer.ErrBadResolverState` parameter. In this way the `ccr.poll()` will be stoped by the `ccr.polling` channel.
-  - In our case, `ccr.poll()` seems useless. That is true for the `passthroughResolver` If the resolver is `dnsResolver` `dnsResolver` will re-resolution the dns name upon receive the signal from `ccr.resolver.ResolveNow()` Then `dnsResolver` will notify gRPC via `cc.UpdateState()`
-- Let's continue the discussion of `ccr.cc.updateResolverState()`
+- `r.cc.UpdateState()` is actually `ccResolverWrapper.UpdateState()`.
+  - please note the difference between `ClientConn` struct and `resolver.ClientConn` interface.
+  - `UpdateState()` sets `ccr.curState` use the new `State` parameter.
+  - `UpdateState()` calls `ccr.cc.updateResolverState()`. It's our next focus.
+  - `UpdateState()` calls `ccr.poll()` to start a goroutine.
+
+In `ccr.poll()`,
+
+- `ccr.resolveNow()` will be called to send a signal to resolver.
+- `ccr.resolveNow()` calls `ccr.resolver.ResolveNow()`, which actually calls `passthroughResolver.ResolveNow()`.
+- In fact, `passthroughResolver.ResolveNow()` do nothing at all.
+- `ccr.poll()` will be paused by the `Timer`. After the `Timer` is up, a new `Timer` will start again.
+- `ccr.poll()` stops if `ccr.polling` is closed or `ccr.done.Done()` is closed.
+- one way to stop `ccr.poll()` is to call `ccr.poll()` again with the `balancer.ErrBadResolverState` parameter.
+- In this way the `ccr.poll()` will be stopped by the `ccr.polling` channel.
+
+In our case, `ccr.poll()` seems useless. That is true for the `passthroughResolver`. If the resolver is `dnsResolver`, `dnsResolver` will resolve the DNS name upon receive the signal from `ccr.resolver.ResolveNow()`. Then `dnsResolver` will notify gRPC via `cc.UpdateState()`.
+
+Let's continue the discussion of `ccr.cc.updateResolverState()`.
 
 ```go
 // newCCResolverWrapper uses the resolver.Builder to build a Resolver and
@@ -246,29 +292,28 @@ func newCCResolverWrapper(cc *ClientConn, rb resolver.Builder) (*ccResolverWrapp
         return nil, err
     }
     return ccr, nil
-}
-...
+} 
 
-const scheme = "passthrough"                                                                                                       
-                                                                                                                                          
-type passthroughBuilder struct{}                                                                                                                        
-                                                                                                                                                        
-func (*passthroughBuilder) Build(target resolver.Target, cc resolver.ClientConn, opts resolver.BuildOptions) (resolver.Resolver, error) {     
-    r := &passthroughResolver{                                                                                                                       
+const scheme = "passthrough"
+
+type passthroughBuilder struct{}
+
+func (*passthroughBuilder) Build(target resolver.Target, cc resolver.ClientConn, opts resolver.BuildOptions) (resolver.Resolver, error) {
+    r := &passthroughResolver{
         target: target,
-        cc:     cc,                                                                                                                    
-    }                                                                                                                                           
-    r.start()                                                                                                                                  
-    return r, nil                                                                                                                            
-}                                                                                                                                            
-                                                                                                                                                     
-func (*passthroughBuilder) Scheme() string {                                                                                  
-    return scheme                                                                                                           
+        cc:     cc,
+    }
+    r.start()
+    return r, nil
 }
-                                                                                                                            
-type passthroughResolver struct {                                                                                                            
-    target resolver.Target                                                                                                  
-    cc     resolver.ClientConn                                                                                                   
+
+func (*passthroughBuilder) Scheme() string {
+    return scheme
+}
+
+type passthroughResolver struct {
+    target resolver.Target
+    cc     resolver.ClientConn
 }
 
 func (r *passthroughResolver) start() {
@@ -282,13 +327,12 @@ func (*passthroughResolver) Close() {}
 func init() {
     resolver.Register(&passthroughBuilder{})
 }
-...
-                                                                                                                
-func (ccr *ccResolverWrapper) resolveNow(o resolver.ResolveNowOptions) {                                        
-    ccr.resolverMu.Lock()                                                                                       
-    if !ccr.done.HasFired() {                                                                                   
-        ccr.resolver.ResolveNow(o)                                                                              
-    }                                                                                                           
+
+func (ccr *ccResolverWrapper) resolveNow(o resolver.ResolveNowOptions) {
+    ccr.resolverMu.Lock()
+    if !ccr.done.HasFired() {
+        ccr.resolver.ResolveNow(o)
+    }
     ccr.resolverMu.Unlock()
 }
 
@@ -331,10 +375,10 @@ func (ccr *ccResolverWrapper) poll(err error) {
                 }
                 // Timer expired; re-resolve.
             }
-        }                                    
-    }()      
-}        
-       
+        }
+    }()
+}
+
 func (ccr *ccResolverWrapper) UpdateState(s resolver.State) {
     if ccr.done.HasFired() {
         return
@@ -346,25 +390,27 @@ func (ccr *ccResolverWrapper) UpdateState(s resolver.State) {
     ccr.curState = s
     ccr.poll(ccr.cc.updateResolverState(ccr.curState, nil))
 }
-
 ```
 
 ### ClientConn.updateResolverState()
 
+### Apply service config
+
 - `ccr.cc.updateResolverState()` belongs to `ClientConn` which is the core of gRPC.
-- In this case, `err` is nil. `cc.dopts.disableServiceConfig` is false. `s.ServiceConfig` is nil.
+- `ccr.cc.updateResolverState()` is actually `ClientConn.updateResolverState()`, which starts the initialization of balancer.
+- In our case, `err` is nil. `cc.dopts.disableServiceConfig` is false. `s.ServiceConfig` is nil.
 - The second `cc.maybeApplyDefaultServiceConfig()` is called.
-  - in this case, `cc.sc` is nil, `cc.dopts.defaultServiceConfig` is false.
+  - In this case, `cc.sc` is nil, `cc.dopts.defaultServiceConfig` is also nil.
   - `cc.applyServiceConfigAndBalancer()` is called with the `emptyServiceConfig`, `defaultConfigSelector{emptyServiceConfig}` and `addrs` as parameters.
-  - In `cc.applyServiceConfigAndBalancer()` the main outcome is assign value to `cc.balancerWrapper`
+  - In `cc.applyServiceConfigAndBalancer()`, the main purpose is determine the value of `newBalancerName`.
     - In this case, `cc.dopts.balancerBuilder` is nil.
-    - The value of `newBalancerName` is `PickFirstBalancerName` Which is `pick_first`
-    - `cc.switchBalancer()` is called.
-      - In `cc.switchBalancer()`
-      - After `balancer.Get()` is called, the value of `builder` is `pickfirstBuilder`
-      - At last `newCCBalancerWrapper()` is called.
-- Finally `bw.updateClientConnState()` is called, which actually calls `ccBalancerWrapper.updateClientConnState()`
-- Let's discuss `newCCBalancerWrapper()` first. We will discuss `ccBalancerWrapper.updateClientConnState()` later.
+    - The value of `newBalancerName` is `PickFirstBalancerName`, which is `pick_first`.
+    - Next, `applyServiceConfigAndBalancer()` calls `cc.switchBalancer()` to initialize the balancer.
+    - In `cc.switchBalancer()`, after `balancer.Get()` is called, the value of `builder` is `pickfirstBuilder`.
+    - In `cc.switchBalancer()`, at last `newCCBalancerWrapper()` is called.
+- Finally, `updateResolverState()` calls `bw.updateClientConnState()`, which actually calls `ccBalancerWrapper.updateClientConnState()`.
+
+Let's discuss `newCCBalancerWrapper()` first. We will discuss `ccBalancerWrapper.updateClientConnState()` later.
 
 ```go
 func (cc *ClientConn) updateResolverState(s resolver.State, err error) error {
@@ -453,41 +499,40 @@ func (cc *ClientConn) updateResolverState(s resolver.State, err error) error {
     }
     return ret
 }
-...
 
 func (cc *ClientConn) maybeApplyDefaultServiceConfig(addrs []resolver.Address) {
     if cc.sc != nil {
         cc.applyServiceConfigAndBalancer(cc.sc, nil, addrs)
-        return                    
+        return
     }
     if cc.dopts.defaultServiceConfig != nil {
-        cc.applyServiceConfigAndBalancer(cc.dopts.defaultServiceConfig, &defaultConfigSelector{cc.dopts.defaultServiceConfig}, addrs)              
-    } else {                                                                
+        cc.applyServiceConfigAndBalancer(cc.dopts.defaultServiceConfig, &defaultConfigSelector{cc.dopts.defaultServiceConfig}, addrs)
+    } else {
         cc.applyServiceConfigAndBalancer(emptyServiceConfig, &defaultConfigSelector{emptyServiceConfig}, addrs)
-    }                          
-}     
+    }
+}
 
 func (cc *ClientConn) applyServiceConfigAndBalancer(sc *ServiceConfig, configSelector iresolver.ConfigSelector, addrs []resolver.Address) {
-    if sc == nil {                
+    if sc == nil {
         // should never reach here.
-        return                               
-    }                                                                                                                                              
-    cc.sc = sc                                                              
-    if configSelector != nil {                                                                                 
+        return
+    }
+    cc.sc = sc
+    if configSelector != nil {
         cc.safeConfigSelector.UpdateConfigSelector(configSelector)
-    } 
-                                      
-    if cc.sc.retryThrottling != nil {                                         
+    }
+
+    if cc.sc.retryThrottling != nil {
         newThrottler := &retryThrottler{
             tokens: cc.sc.retryThrottling.MaxTokens,
-            max:    cc.sc.retryThrottling.MaxTokens,               
-            thresh: cc.sc.retryThrottling.MaxTokens / 2,                     
-            ratio:  cc.sc.retryThrottling.TokenRatio,                                                                                      
-        }                          
+            max:    cc.sc.retryThrottling.MaxTokens,
+            thresh: cc.sc.retryThrottling.MaxTokens / 2,
+            ratio:  cc.sc.retryThrottling.TokenRatio,
+        }
         cc.retryThrottler.Store(newThrottler)
-    } else {      
+    } else {
         cc.retryThrottler.Store((*retryThrottler)(nil))
-    }         
+    }
 
     if cc.dopts.balancerBuilder == nil {
         // Only look at balancer types and switch balancer if balancer dial
@@ -554,25 +599,16 @@ func (cc *ClientConn) switchBalancer(name string) {
     cc.curBalancerName = builder.Name()
     cc.balancerWrapper = newCCBalancerWrapper(cc, builder, cc.balancerBuildOpts)
 }
-
 ```
 
 ### newCCBalancerWrapper()
 
-- When `newCCBalancerWrapper()` is called, `builder` is `pickfirstBuilder`
-- `b.Build()` is called, actually `pickfirstBuilder.Build()` will be called.
-  - Create and return a new `pickfirstBalancer` object.
-- Start a new goroutine `ccb.watcher()`  
-  - `ccb.watcher()` waits and reads the connection state `t` from a channel `ccb.scBuffer.Get()`
-  - `t` is an object of type `scStateUpdate`
-  - `scStateUpdate` contains the `balancer.subConns` and the `connectivity.State`
-  - Call `ccb.balancer.UpdateSubConnState()` to update the balancer connection state.
-  - For `ccb.balancer.UpdateSubConnState()` `pickfirstBalancer.UpdateSubConnState()` will be called.
-  - In `pickfirstBalancer.UpdateSubConnState()` `b.cc.UpdateState()` will be called.
-    - In `ccBalancerWrapper.UpdateState()`
-    - `ccb.cc.csMgr.updateState()` will be called to notify the new state to `connectivityStateManager`
-    - `ccb.cc.blockingpicker.updatePicker()` will be called to update the `Picker`
-- Next, Let's discuss `ccBalancerWrapper.updateClientConnState()`
+### Initialize balancer
+
+- In our case, when `newCCBalancerWrapper()` is called, `builder` parameter is `pickfirstBuilder`.
+- `newCCBalancerWrapper()` calls `b.Build()`, which is actually `pickfirstBuilder.Build()`.
+  - `b.Build()` creates a new `pickfirstBalancer` object.
+- `newCCBalancerWrapper()` starts a new goroutine `ccb.watcher()`.
 
 ```go
 func newCCBalancerWrapper(cc *ClientConn, b balancer.Builder, bopts balancer.BuildOptions) *ccBalancerWrapper {
@@ -587,23 +623,53 @@ func newCCBalancerWrapper(cc *ClientConn, b balancer.Builder, bopts balancer.Bui
     return ccb
 }
 
+// PickFirstBalancerName is the name of the pick_first balancer.
+const PickFirstBalancerName = "pick_first"
+
+func newPickfirstBuilder() balancer.Builder {
+    return &pickfirstBuilder{}
+}
+
+type pickfirstBuilder struct{}
+
+func (*pickfirstBuilder) Build(cc balancer.ClientConn, opt balancer.BuildOptions) balancer.Balancer {
+    return &pickfirstBalancer{cc: cc}
+}
+
+func (*pickfirstBuilder) Name() string {
+    return PickFirstBalancerName
+}
+```
+
+`ccb.watcher()` waits and reads the connection state `t` from a channel `ccb.scBuffer.Get()`
+
+- `t` is an object of type `scStateUpdate`
+- `scStateUpdate` contains the `balancer.subConns` and the `connectivity.State`
+
+`ccb.watcher()` calls `ccb.balancer.UpdateSubConnState()` to update the balancer connection state.
+
+- `ccb.balancer.UpdateSubConnState()` is actually `pickfirstBalancer.UpdateSubConnState()`.
+- In `pickfirstBalancer.UpdateSubConnState()`, `b.cc.UpdateState()` is called to forward the picker and state.
+- `b.cc.UpdateState()` is actually `ccBalancerWrapper.UpdateState()`.
+
+```go
 // watcher balancer functions sequentially, so the balancer can be implemented
-// lock-free.                                                                
-func (ccb *ccBalancerWrapper) watcher() {                                                          
-    for {                                                                       
-        select {                                                            
-        case t := <-ccb.scBuffer.Get():                                       
+// lock-free.
+func (ccb *ccBalancerWrapper) watcher() {
+    for {
+        select {
+        case t := <-ccb.scBuffer.Get():
             ccb.scBuffer.Load()
-            if ccb.done.HasFired() {                                                                                                 
-                break                                                                                                              
-            }                                                                                                                       
-            ccb.balancerMu.Lock()                                                                                                   
+            if ccb.done.HasFired() {
+                break
+            }
+            ccb.balancerMu.Lock()
             su := t.(*scStateUpdate)
-            ccb.balancer.UpdateSubConnState(su.sc, balancer.SubConnState{ConnectivityState: su.state, ConnectionError: su.err})  
-            ccb.balancerMu.Unlock()                            
-        case <-ccb.done.Done():                                                                                                         
-        }                                                                                                                        
-          
+            ccb.balancer.UpdateSubConnState(su.sc, balancer.SubConnState{ConnectivityState: su.state, ConnectionError: su.err})
+            ccb.balancerMu.Unlock()
+        case <-ccb.done.Done():
+        }
+
         if ccb.done.HasFired() {
             ccb.balancer.Close()
             ccb.mu.Lock()
@@ -619,23 +685,23 @@ func (ccb *ccBalancerWrapper) watcher() {
     }
 }
 
-func (b *pickfirstBalancer) UpdateSubConnState(sc balancer.SubConn, s balancer.SubConnState) {                                      
-    if logger.V(2) {                                                                                                                                
-        logger.Infof("pickfirstBalancer: UpdateSubConnState: %p, %v", sc, s)                                                                     
-    }                                                                                                                                                       
-    if b.sc != sc {                                                                                                                               
-        if logger.V(2) {                                                                                                           
-            logger.Infof("pickfirstBalancer: ignored state change because sc is not recognized")                                                    
+func (b *pickfirstBalancer) UpdateSubConnState(sc balancer.SubConn, s balancer.SubConnState) {
+    if logger.V(2) {
+        logger.Infof("pickfirstBalancer: UpdateSubConnState: %p, %v", sc, s)
+    }
+    if b.sc != sc {
+        if logger.V(2) {
+            logger.Infof("pickfirstBalancer: ignored state change because sc is not recognized")
         }
         return
-    }                                                                                                                        
-    b.state = s.ConnectivityState                                                                                                                  
-    if s.ConnectivityState == connectivity.Shutdown {                                                                                
+    }
+    b.state = s.ConnectivityState
+    if s.ConnectivityState == connectivity.Shutdown {
         b.sc = nil
-        return                                                                                                                             
-    }                                                                                                                              
-                                                                                                                                       
-    switch s.ConnectivityState {                                                                                                                
+        return
+    }
+
+    switch s.ConnectivityState {
     case connectivity.Ready, connectivity.Idle:
         b.cc.UpdateState(balancer.State{ConnectivityState: s.ConnectivityState, Picker: &picker{result: balancer.PickResult{SubConn: sc}}})
     case connectivity.Connecting:
@@ -648,155 +714,169 @@ func (b *pickfirstBalancer) UpdateSubConnState(sc balancer.SubConn, s balancer.S
     }
 }
 
-func (ccb *ccBalancerWrapper) UpdateState(s balancer.State) {                                                                              
-    ccb.mu.Lock()                                                                                                                     
-    defer ccb.mu.Unlock()                                                     
-    if ccb.subConns == nil {                                                  
-        return                                                                                                                         
-    }                                                                                                                                           
+```
+
+In `ccBalancerWrapper.UpdateState()`,
+
+- `ccb.cc.csMgr.updateState()` will be called to notify the new state to `connectivityStateManager`.
+- `ccb.cc.blockingpicker.updatePicker()` will be called to update the `Picker`.
+
+Next, Let's discuss `ccBalancerWrapper.updateClientConnState()`
+
+```go
+func (ccb *ccBalancerWrapper) UpdateState(s balancer.State) {
+    ccb.mu.Lock()
+    defer ccb.mu.Unlock()
+    if ccb.subConns == nil {
+        return
+    }
     // Update picker before updating state.  Even though the ordering here does
     // not matter, it can lead to multiple calls of Pick in the common start-up
-    // case where we wait for ready and then perform an RPC.  If the picker is                            
-    // updated later, we could call the "connecting" picker when the state is                                                         
-    // updated, and then call the "ready" picker after the picker gets updated.                                 
-    ccb.cc.blockingpicker.updatePicker(s.Picker)                                 
-    ccb.cc.csMgr.updateState(s.ConnectivityState)                                                                               
-}                                                                                                                            
+    // case where we wait for ready and then perform an RPC.  If the picker is
+    // updated later, we could call the "connecting" picker when the state is
+    // updated, and then call the "ready" picker after the picker gets updated.
+    ccb.cc.blockingpicker.updatePicker(s.Picker)
+    ccb.cc.csMgr.updateState(s.ConnectivityState)
+}
 
-// updateState updates the connectivity.State of ClientConn.                  
-// If there's a change it notifies goroutines waiting on state change to      
-// happen.                                                                                                                                        
-func (csm *connectivityStateManager) updateState(state connectivity.State) {                                                              
-    csm.mu.Lock()                                                                                                                    
-    defer csm.mu.Unlock()                                                    
-    if csm.state == connectivity.Shutdown {                                  
-        return                                                                                                                        
-    }                                                                                                                                          
-    if csm.state == state {                                                   
-        return                                                                
-    }                                                                                                    
-    csm.state = state                                                                                                                
-    channelz.Infof(logger, csm.channelzID, "Channel Connectivity change to %v", state)                         
-    if csm.notifyChan != nil {                                                  
-        // There are other goroutines waiting on this channel.                                                                 
-        close(csm.notifyChan)                                                                                               
-        csm.notifyChan = nil                                                                                                      
-    }                                                                       
-}                                            
+// updateState updates the connectivity.State of ClientConn.
+// If there's a change it notifies goroutines waiting on state change to
+// happen.
+func (csm *connectivityStateManager) updateState(state connectivity.State) {
+    csm.mu.Lock()
+    defer csm.mu.Unlock()
+    if csm.state == connectivity.Shutdown {
+        return
+    }
+    if csm.state == state {
+        return
+    }
+    csm.state = state
+    channelz.Infof(logger, csm.channelzID, "Channel Connectivity change to %v", state)
+    if csm.notifyChan != nil {
+        // There are other goroutines waiting on this channel.
+        close(csm.notifyChan)
+        csm.notifyChan = nil
+    }
+}
 
-// updatePicker is called by UpdateBalancerState. It unblocks all blocked pick.                                                                    
-func (pw *pickerWrapper) updatePicker(p balancer.Picker) {                                                                                 
-    pw.mu.Lock()                                                                                                                      
-    if pw.done {                                                              
-        pw.mu.Unlock()                                                        
-        return                                                                                                                         
-    }                                                                                                                                           
-    pw.picker = p                                                              
-    // pw.blockingCh should never be nil.                                      
-    close(pw.blockingCh)                                                                                  
-    pw.blockingCh = make(chan struct{})                                                                                               
-    pw.mu.Unlock()                                                                                              
-}                                                                                
-
+// updatePicker is called by UpdateBalancerState. It unblocks all blocked pick.
+func (pw *pickerWrapper) updatePicker(p balancer.Picker) {
+    pw.mu.Lock()
+    if pw.done {
+        pw.mu.Unlock()
+        return
+    }
+    pw.picker = p
+    // pw.blockingCh should never be nil.
+    close(pw.blockingCh)
+    pw.blockingCh = make(chan struct{})
+    pw.mu.Unlock()
+}
 ```
 
 ### ccBalancerWrapper.updateClientConnState()
 
-- In `ccBalancerWrapper.updateClientConnState()` `ccb.balancer.UpdateClientConnState()` will be called.
-- In this case, `Balancer` is `pickfirstBalancer` So `pickfirstBalancer.UpdateClientConnState()` will be called.
-- In `pickfirstBalancer.UpdateClientConnState()` `b.sc` is nil.
-  - `b.cc.NewSubConn()` is called, actually `ccBalancerWrapper.NewSubConn()` will be called.
-    - `ccBalancerWrapper.NewSubConn()` calls `ccb.cc.newAddrConn()` to create `addrConn`
-    - `acBalancerWrapper` is created. `acBalancerWrapper` implements `balancer.SubConn` interface
-    - `ccb.cc.newAddrConn()` creates `addrConn` and store it in connection pool `cc.conns[ac] = struct{}{}`
-    - `addrConn` is the real connection, right now `addrConn` does not connect to the target. gRPC will perform the connection later.
-  - `b.cc.UpdateState()` is called, actually `ccBalancerWrapper.UpdateState()` will be called.
-    - We already discuss this method in previous section.
-    - Balancer use `ccBalancerWrapper.UpdateState()` to notify gRPC the state of connectivity and change the `Picker`
-  - `b.sc.Connect()` is called, actually `acBalancerWrapper.Connect()` will be called.
-    - In our case, `b.sc` is assigned by the return value of `b.cc.NewSubConn()` which is `acBalancerWrapper`
-    - `acBalancerWrapper.Connect()` will call `addrConn.connect()` to finish its job.
-- Let's continue the discussion of `addrConn.connect()` in nect section.
+### Update client connection
+
+`ccBalancerWrapper.updateClientConnState()` calls `ccb.balancer.UpdateClientConnState()` to finish the job. In this case, `Balancer` is `pickfirstBalancer`. So `pickfirstBalancer.UpdateClientConnState()` will be called.
+
+In `pickfirstBalancer.UpdateClientConnState()`, `b.sc` is nil.
+
+- `UpdateClientConnState()` calls `b.cc.NewSubConn()`, which is actually `ccBalancerWrapper.NewSubConn()` to create sub connection.
+- `UpdateClientConnState()` calls `b.cc.UpdateState()`, which is actually `ccBalancerWrapper.UpdateState()` to update the connection state to `Idle`.
+  - We already discuss `ccBalancerWrapper.UpdateState()`  in previous section.
+  - Balancer use `ccBalancerWrapper.UpdateState()` to notify gRPC the state of connectivity and change the `Picker`.
+- `UpdateClientConnState()` calls `b.sc.Connect()`, which is actually `acBalancerWrapper.Connect()` to connect with the target server.
+  - In our case, `b.sc` is assigned by the return value of `b.cc.NewSubConn()` which is `acBalancerWrapper`.
 
 ```go
-func (ccb *ccBalancerWrapper) updateClientConnState(ccs *balancer.ClientConnState) error {                                                         
-    ccb.balancerMu.Lock()                                                                                                                   
-    defer ccb.balancerMu.Unlock()                                                                                                                 
-    return ccb.balancer.UpdateClientConnState(*ccs)                                                                                        
-}                                                                                                                                                       
-...
+func (ccb *ccBalancerWrapper) updateClientConnState(ccs *balancer.ClientConnState) error {
+    ccb.balancerMu.Lock()
+    defer ccb.balancerMu.Unlock()
+    return ccb.balancer.UpdateClientConnState(*ccs)
+}
 
-func (b *pickfirstBalancer) UpdateClientConnState(cs balancer.ClientConnState) error {                                                             
-    if len(cs.ResolverState.Addresses) == 0 {                                  
-        b.ResolverError(errors.New("produced zero addresses"))                                                                                    
-        return balancer.ErrBadResolverState                                                                                                
-    }                                                                                                                                                   
-    if b.sc == nil {                                                                                                                                          
-        var err error                                                                                                                      
-       b.sc, err = b.cc.NewSubConn(cs.ResolverState.Addresses, balancer.NewSubConnOptions{})                          
-        if err != nil {                                                                                                                                       
-            if logger.V(2) {                                                                                           
+func (b *pickfirstBalancer) UpdateClientConnState(cs balancer.ClientConnState) error {
+    if len(cs.ResolverState.Addresses) == 0 {
+        b.ResolverError(errors.New("produced zero addresses"))
+        return balancer.ErrBadResolverState
+    }
+    if b.sc == nil {
+        var err error
+        b.sc, err = b.cc.NewSubConn(cs.ResolverState.Addresses, balancer.NewSubConnOptions{})
+        if err != nil {
+            if logger.V(2) {
                 logger.Errorf("pickfirstBalancer: failed to NewSubConn: %v", err)
-            }                                                                                                     
-            b.state = connectivity.TransientFailure                                                                 
-            b.cc.UpdateState(balancer.State{ConnectivityState: connectivity.TransientFailure,                               
-                Picker: &picker{err: fmt.Errorf("error creating connection: %v", err)},                       
-            })                                                                                                
-            return balancer.ErrBadResolverState                        
-        }                                                                                                                                                    
-        b.state = connectivity.Idle                                                                                             
-        b.cc.UpdateState(balancer.State{ConnectivityState: connectivity.Idle, Picker: &picker{result: balancer.PickResult{SubConn: b.sc}}})         
-        b.sc.Connect()                                                                                                                                         
+            }
+            b.state = connectivity.TransientFailure
+            b.cc.UpdateState(balancer.State{ConnectivityState: connectivity.TransientFailure,
+                Picker: &picker{err: fmt.Errorf("error creating connection: %v", err)},
+            })
+            return balancer.ErrBadResolverState
+        }
+        b.state = connectivity.Idle
+        b.cc.UpdateState(balancer.State{ConnectivityState: connectivity.Idle, Picker: &picker{result: balancer.PickResult{SubConn: b.sc}}})
+        b.sc.Connect()
     } else {
-        b.sc.UpdateAddresses(cs.ResolverState.Addresses)
+        b.cc.UpdateAddresses(b.sc, cs.ResolverState.Addresses)
         b.sc.Connect()
     }
     return nil
 }
+```
 
+`ccBalancerWrapper.NewSubConn()` calls `ccb.cc.newAddrConn()` to create `addrConn`.
+
+- `ccb.cc.newAddrConn()` is actually `ClientConn.newAddrConn()`.
+- `NewSubConn()` creates `acBalancerWrapper`, which implements `balancer.SubConn` interface.
+- `ClientConn.newAddrConn()` stores the just created `addrConn` in connection pool `cc.conns[ac] = struct{}{}`.
+- `addrConn` represents the real connection, right now `addrConn` does not connect to the target. gRPC will perform the connection later.
+
+```go
 func (ccb *ccBalancerWrapper) NewSubConn(addrs []resolver.Address, opts balancer.NewSubConnOptions) (balancer.SubConn, error) {
-    if len(addrs) <= 0 {                                                                                                                             
+    if len(addrs) <= 0 {
         return nil, fmt.Errorf("grpc: cannot create SubConn with empty address list")
-    }                                                                                         
-    ccb.mu.Lock()                                                                   
-    defer ccb.mu.Unlock()                                                            
-    if ccb.subConns == nil {                                                  
-        return nil, fmt.Errorf("grpc: ClientConn balancer wrapper was closed")                                                                              
-    }                                                                                                                                                       
-    ac, err := ccb.cc.newAddrConn(addrs, opts)            
-    if err != nil {                                          
-        return nil, err                                             
-    }                                                                                                                                                       
-    acbw := &acBalancerWrapper{ac: ac}                                             
-    acbw.ac.mu.Lock()                       
-    ac.acbw = acbw                     
-    acbw.ac.mu.Unlock()                       
-    ccb.subConns[acbw] = struct{}{}                                                
-    return acbw, nil                       
-}              
+    }
+    ccb.mu.Lock()
+    defer ccb.mu.Unlock()
+    if ccb.subConns == nil {
+        return nil, fmt.Errorf("grpc: ClientConn balancer wrapper was closed")
+    }
+    ac, err := ccb.cc.newAddrConn(addrs, opts)
+    if err != nil {
+        return nil, err
+    }
+    acbw := &acBalancerWrapper{ac: ac}
+    acbw.ac.mu.Lock()
+    ac.acbw = acbw
+    acbw.ac.mu.Unlock()
+    ccb.subConns[acbw] = struct{}{}
+    return acbw, nil
+}
 
-// newAddrConn creates an addrConn for addrs and adds it to cc.conns.           
-//                                                                                                               
-// Caller needs to make sure len(addrs) > 0.                
-func (cc *ClientConn) newAddrConn(addrs []resolver.Address, opts balancer.NewSubConnOptions) (*addrConn, error) {                         
-    ac := &addrConn{                                                                                         
-        state:        connectivity.Idle,                                     
-        cc:           cc,             
-        addrs:        addrs,                                                                                     
-        scopts:       opts,                                                                                                    
-        dopts:        cc.dopts,                                               
-        czData:       new(channelzData),                                                                                                            
-        resetBackoff: make(chan struct{}),                                    
-    }                                                                                        
-    ac.ctx, ac.cancel = context.WithCancel(cc.ctx)                                 
+// newAddrConn creates an addrConn for addrs and adds it to cc.conns.
+//
+// Caller needs to make sure len(addrs) > 0.
+func (cc *ClientConn) newAddrConn(addrs []resolver.Address, opts balancer.NewSubConnOptions) (*addrConn, error) {
+    ac := &addrConn{
+        state:        connectivity.Idle,
+        cc:           cc,
+        addrs:        addrs,
+        scopts:       opts,
+        dopts:        cc.dopts,
+        czData:       new(channelzData),
+        resetBackoff: make(chan struct{}),
+    }
+    ac.ctx, ac.cancel = context.WithCancel(cc.ctx)
     // Track ac in cc. This needs to be done before any getTransport(...) is called.
-    cc.mu.Lock()                                                             
-    if cc.conns == nil {                                                                                                                                    
-        cc.mu.Unlock()                                                                                                                                      
-        return nil, ErrClientConnClosing                 
-    }                                                       
-    if channelz.IsOn() {                                           
-        ac.channelzID = channelz.RegisterSubChannel(ac, cc.channelzID, "")                                                                                  
+    cc.mu.Lock()
+    if cc.conns == nil {
+        cc.mu.Unlock()
+        return nil, ErrClientConnClosing
+    }
+    if channelz.IsOn() {
+        ac.channelzID = channelz.RegisterSubChannel(ac, cc.channelzID, "")
         channelz.AddTraceEvent(logger, ac.channelzID, 0, &channelz.TraceEventDesc{
             Desc:     "Subchannel Created",
             Severity: channelz.CtInfo,
@@ -810,55 +890,56 @@ func (cc *ClientConn) newAddrConn(addrs []resolver.Address, opts balancer.NewSub
     cc.mu.Unlock()
     return ac, nil
 }
+```
 
-func (acbw *acBalancerWrapper) Connect() {         
-    acbw.mu.Lock()                                                                   
+`ccBalancerWrapper.UpdateState()` calls `acbw.ac.connect()`, which is `addrConn.connect()` to finish its job. We will continue the discussion of `addrConn.connect()` in next section.
+
+```go
+
+func (acbw *acBalancerWrapper) Connect() {
+    acbw.mu.Lock()
     defer acbw.mu.Unlock()
     acbw.ac.connect()
 }
-
 ```
 
 ## Dial process part II
 
 It's time to show the Dial process part II. Part II focus on establishing transport connection with the target server.
 
-- yellow box represents the important type and method/funciton.
-- green box represents a function run in a dedicated goroutine.
-- dash box represents the important type/struct.
-- arrow represents the call direction and order.
-
 ![Dial Part II](../images/images.007.png)
+
+- yellow box represents the important type and method/function.
+- green box represents a function run in a dedicated goroutine.
+- arrow represents the call direction and order.
+- Left red dot represents the box is a continue part from other diagram.
+- Right red dot represents there is a extension diagram for that box.
 
 ### addrConn.connect()
 
-- In `addrConn.connect()`
-  - `ac.updateConnectivityState()` will be called to update the connectivity state.
-    - In our case, the connectivity state is `connectivity.Connecting`
-    - In `ac.updateConnectivityState()` `ac.state` is updated and `ac.cc.handleSubConnStateChange()` will be called.
-    - In `ac.cc.handleSubConnStateChange()` `cc.balancerWrapper.handleSubConnStateChange()` will be called.
-    - In `cc.balancerWrapper.handleSubConnStateChange()`
-    - A message `scStateUpdate` will be created. Next calls `ccb.scBuffer.Put()` to send the state update message to `ccb.watcher()`
-    - `ccb.scBuffer` is an object of type `buffer.Unbounded` `ccb.scBuffer.Put()` is actually `Unbounded.Put()`
-    - `Unbounded.Put()` will send the message to a channel in `Unbounded` struct.
-    - `ccb.watcher()` will read from the same channel in `Unbounded` struct.
-  - start a new goroutine `ac.resetTransport()`
-- Let's continue the discussion of `ac.resetTransport()` in nect section.
+### Update connectivity state
+
+`addrConn.connect()` calls `ac.updateConnectivityState()` to update the connectivity state.
+
+- `ac.updateConnectivityState()` is `addrConn.updateConnectivityState()`.
+- Here, the connectivity state is `connectivity.Connecting`.
+
+`addrConn.connect()` calls `ac.resetTransport()` to connect with the target server. We will discuss `ac.resetTransport()` in next section
 
 ```go
-// connect starts creating a transport.                                                  
+// connect starts creating a transport.
 // It does nothing if the ac is not IDLE.
-// TODO(bar) Move this to the addrConn section.                                                                               
-func (ac *addrConn) connect() error {             
-    ac.mu.Lock()                                                                    
+// TODO(bar) Move this to the addrConn section.
+func (ac *addrConn) connect() error {
+    ac.mu.Lock()
     if ac.state == connectivity.Shutdown {
         ac.mu.Unlock()
         return errConnClosing
     }
-    if ac.state != connectivity.Idle {                 
+    if ac.state != connectivity.Idle {
         ac.mu.Unlock()
-        return nil       
-    }            
+        return nil
+    }
     // Update connectivity state within the lock to prevent subsequent or
     // concurrent calls from resetting the transport more than once.
     ac.updateConnectivityState(connectivity.Connecting, nil)
@@ -868,105 +949,117 @@ func (ac *addrConn) connect() error {
     go ac.resetTransport()
     return nil
 }
+```
 
-// Note: this requires a lock on ac.mu.                                                                                       
+`ac.updateConnectivityState()` upstates `ac.state` and calls `ac.cc.handleSubConnStateChange()` to finish the job.
+
+- `ac.cc.handleSubConnStateChange()` is `ClientConn.handleSubConnStateChange()`.
+- Note the `connectivity.State` is forwarded to `ClientConn.handleSubConnStateChange()`.
+
+```go
+// Note: this requires a lock on ac.mu.
 func (ac *addrConn) updateConnectivityState(s connectivity.State, lastErr error) {
-    if ac.state == s {                                                              
-        return                            
-    }                                                  
-    ac.state = s             
+    if ac.state == s {
+        return
+    }
+    ac.state = s
     channelz.Infof(logger, ac.channelzID, "Subchannel Connectivity change to %v", s)
     ac.cc.handleSubConnStateChange(ac.acbw, s, lastErr)
-}                     
+}
+```
 
+`ClientConn.handleSubConnStateChange()` calls `cc.balancerWrapper.handleSubConnStateChange()` to finish the job.
+
+- `cc.balancerWrapper.handleSubConnStateChange()` is `ccBalancerWrapper.handleSubConnStateChange()`.
+- Note the `connectivity.State` is forwarded to `ccBalancerWrapper.handleSubConnStateChange()`.
+
+```go
 func (cc *ClientConn) handleSubConnStateChange(sc balancer.SubConn, s connectivity.State, err error) {
-    cc.mu.Lock()                                                                    
-    if cc.conns == nil {                  
-        cc.mu.Unlock()                                 
-        return               
-    }                                                                               
+    cc.mu.Lock()
+    if cc.conns == nil {
+        cc.mu.Unlock()
+        return
+    }
     // TODO(bar switching) send updates to all balancer wrappers when balancer
     // gracefully switching is supported.
     cc.balancerWrapper.handleSubConnStateChange(sc, s, err)
-    cc.mu.Unlock()                                               
-}                                                                        
+    cc.mu.Unlock()
+}
+```
 
+`cc.balancerWrapper.handleSubConnStateChange()` creates `scStateUpdate` and calls `ccb.scBuffer.Put()` to send the state update message to `ccb.watcher()`.
+
+- `ccb.scBuffer` is an object of type `buffer.Unbounded`. `ccb.scBuffer.Put()` is actually `Unbounded.Put()`.
+- `Unbounded.Put()` sends the message to a channel in `Unbounded` struct.
+- `ccb.watcher()` reads the message from the same channel in `Unbounded` struct.
+
+Please refer to [Initialize balancer](#initialize-balancer) for the detail of `ccb.watcher()`.
+
+```go
 func (ccb *ccBalancerWrapper) handleSubConnStateChange(sc balancer.SubConn, s connectivity.State, err error) {
-    // When updating addresses for a SubConn, if the address in use is not in        
+    // When updating addresses for a SubConn, if the address in use is not in
     // the new addresses, the old ac will be tearDown() and a new ac will be
     // created. tearDown() generates a state change with Shutdown state, we
     // don't want the balancer to receive this state change. So before
-    // tearDown() on the old ac, ac.acbw (acWrapper) will be set to nil, and         
+    // tearDown() on the old ac, ac.acbw (acWrapper) will be set to nil, and
     // this function will be called with (nil, Shutdown). We don't need to call
-    // balancer method in this case.      
-    if sc == nil {                                          
-        return                                                    
-    }                                                                     
-    ccb.scBuffer.Put(&scStateUpdate{                                 
-        sc:    sc,                                                   
-        state: s,                      
-        err:   err,                                  
-    })                                                                                                            
-}                               
+    // balancer method in this case.
+    if sc == nil {
+        return
+    }
+    ccb.scBuffer.Put(&scStateUpdate{
+        sc:    sc,
+        state: s,
+        err:   err,
+    })
+}
 
-// ccBalancerWrapper is a wrapper on top of cc for balancers.                                                     
-// It implements balancer.ClientConn interface.                                                                                            
-type ccBalancerWrapper struct {                                                                                                                                 
-    cc         *ClientConn                                                                                                                                      
-    balancerMu sync.Mutex // synchronizes calls to the balancer                                                   
-    balancer   balancer.Balancer                        
-    scBuffer   *buffer.Unbounded                                          
-    done       *grpcsync.Event                                                            
-                                                                                                                                        
-    mu       sync.Mutex                                                        
+// ccBalancerWrapper is a wrapper on top of cc for balancers.
+// It implements balancer.ClientConn interface.
+type ccBalancerWrapper struct {
+    cc         *ClientConn
+    balancerMu sync.Mutex // synchronizes calls to the balancer
+    balancer   balancer.Balancer
+    scBuffer   *buffer.Unbounded
+    done       *grpcsync.Event
+
+    mu       sync.Mutex
     subConns map[*acBalancerWrapper]struct{}
-}                             
+}
 
+// Put adds t to the unbounded buffer.
+func (b *Unbounded) Put(t interface{}) {
+    b.mu.Lock()
+    if len(b.backlog) == 0 {
+        select {
+        case b.c <- t:
+            b.mu.Unlock()
+            return
+        default:
+        }
+    }
+    b.backlog = append(b.backlog, t)
+    b.mu.Unlock()
+}
 
-// Put adds t to the unbounded buffer.                       
-func (b *Unbounded) Put(t interface{}) {                                                                                       
-    b.mu.Lock()                                                              
-    if len(b.backlog) == 0 {                                                         
-        select {                                                           
-        case b.c <- t:                                                         
-            b.mu.Unlock()                                                                    
-            return                                                                           
-        default:                                                                                               
-        }                                                                                     
-    }                                                                  
-    b.backlog = append(b.backlog, t)                                                
-    b.mu.Unlock()                                                                                                 
-}                                                                                                                                          
-
-// scStateUpdate contains the subConn and the new state it changed to.               
-type scStateUpdate struct {                                                                                    
-    sc    balancer.SubConn                                                   
-    state connectivity.State                                                
-    err   error                                                            
-}                                                                     
-
+// scStateUpdate contains the subConn and the new state it changed to.
+type scStateUpdate struct {
+    sc    balancer.SubConn
+    state connectivity.State
+    err   error
+}
 ```
 
 ### addrConn.resetTransport()
 
-- In the last step of `addrConn.connect()`, `addrConn.resetTransport()` will be called to connect to the server asynchronously.
-- `ac.tryAllAddrs()` will be called with the spcified `connectDeadline` actually `addrConn.tryAllAddrs()` will be called.
-  - In `addrConn.tryAllAddrs()` `ac.createTransport()` will be called, actually `addrConn.createTransport()` will be called.
-  - In `addrConn.createTransport()` `transport.NewClientTransport()` will be called.
-  - In `transport.NewClientTransport()` `newHTTP2Client()` will be called.
-  - In `newHTTP2Client()`
-    - `dial()` will be called to establish the transport connection.
-    - If `transportCreds` is set, `transportCreds.ClientHandshake()` will be called to perform the TLS handshake.
-    - `framer` is created via `newFramer()` calling.
-    - `t.controlBuf` is created via `newControlBuffer()` calling.
-    - If `t.keepaliveEnabled` is set, start a new goroutine `t.keepalive()` which makes sure the connection is alive by sending pings.
-    - Then start a new goroutine `t.reader()` which in charge of reading data from network connection.
-    - Finally start a new goroutine `t.loopy.run()` which will reads control frames from controlBuf and processes them by
-      - Updating loopy's internal state, or/and
-      - Writing out HTTP2 frames on the wire.
-    - There is a dedicated chapter to introduce [controlBuffer, loopyWriter and framer](control.md), which provide more detail about their design.
-- If `ac.tryAllAddrs()` returned successfully, `ac.startHealthCheck()` will be called to starts the health checking stream (RPC) to watch the health stats of this connection if health checking is requested and configured.
-  - In our case, health check is disabled. we will not discuss it in detail.
+### Create transport
+
+In the last step of `addrConn.connect()`, `addrConn.resetTransport()` will be called to connect to the server asynchronously.
+
+- `resetTransport()` calls `ac.tryAllAddrs()`, which is `addrConn.tryAllAddrs()`.
+- If `ac.tryAllAddrs()` returned successfully, `resetTransport()` calls `ac.startHealthCheck()`.
+
+Next we discuss `ac.startHealthCheck()` first. `addrConn.tryAllAddrs()`  will be the last one to discuss.
 
 ```go
 func (ac *addrConn) resetTransport() {
@@ -1065,7 +1158,65 @@ func (ac *addrConn) resetTransport() {
         // the associated SubConn.
     }
 }
+```
 
+In `startHealthCheck()`, the defer function will call `ac.updateConnectivityState()` to set the connectivity state to ready.
+
+- Please refer to [Update connectivity state](#update-connectivity-state) for detail.
+- In our case, health check is disabled. Here we will not go deeper into health checking system.
+
+```go
+// startHealthCheck starts the health checking stream (RPC) to watch the health
+// stats of this connection if health checking is requested and configured.
+//
+// LB channel health checking is enabled when all requirements below are met:
+// 1. it is not disabled by the user with the WithDisableHealthCheck DialOption
+// 2. internal.HealthCheckFunc is set by importing the grpc/health package
+// 3. a service config with non-empty healthCheckConfig field is provided
+// 4. the load balancer requests it
+//
+// It sets addrConn to READY if the health checking stream is not started.
+//
+// Caller must hold ac.mu.
+func (ac *addrConn) startHealthCheck(ctx context.Context) {
+    var healthcheckManagingState bool
+    defer func() {
+        if !healthcheckManagingState {
+            ac.updateConnectivityState(connectivity.Ready, nil)
+        }
+    }()
+
+    if ac.cc.dopts.disableHealthCheck {
+        return
+    }
+    healthCheckConfig := ac.cc.healthCheckConfig()
+    if healthCheckConfig == nil {
+        return
+    }
+    if !ac.scopts.HealthCheckEnabled {
+        return
+    }
++-- 30 lines: healthCheckFunc := ac.cc.dopts.healthCheckFunc······························································································
+    // Start the health checking stream.
+    go func() {
+        err := ac.cc.dopts.healthCheckFunc(ctx, newStream, setConnectivityState, healthCheckConfig.ServiceName)
+        if err != nil {
+            if status.Code(err) == codes.Unimplemented {
+                channelz.Error(logger, ac.channelzID, "Subchannel health check is unimplemented at server side, thus health check is disabled")
+            } else {
+                channelz.Errorf(logger, ac.channelzID, "HealthCheckFunc exits with unexpected error %v", err)
+            }
+        }
+    }()
+}
+```
+
+`tryAllAddrs()` is called with the specified `connectDeadline` parameter.
+
+- `tryAllAddrs()` calls `ac.createTransport()`, which is actually `addrConn.createTransport()`.
+- Note the `connectDeadline` parameter is also passed to `ac.createTransport()`.
+
+```go
 // tryAllAddrs tries to creates a connection to the addresses, and stop when at the
 // first successful one. It returns the transport, the address and a Event in
 // the successful case. The Event fires when the returned transport disconnects.
@@ -1103,25 +1254,13 @@ func (ac *addrConn) tryAllAddrs(addrs []resolver.Address, connectDeadline time.T
     // Couldn't connect to any address.
     return nil, resolver.Address{}, nil, firstConnErr
 }
+```
 
-func (cc *ClientConn) resolveNow(o resolver.ResolveNowOptions) {                                                 
-    cc.mu.RLock()                                                      
-    r := cc.resolverWrapper                                      
-    cc.mu.RUnlock()                                                             
-    if r == nil {                                                          
-        return                                                       
-    }                                                                          
-    go r.resolveNow(o)                                                      
-}                                                                                                                
+`createTransport()` calls `transport.NewClientTransport()` to connect to target server.
 
-func (ccr *ccResolverWrapper) resolveNow(o resolver.ResolveNowOptions) {                                          
-    ccr.resolverMu.Lock()                                               
-    if !ccr.done.HasFired() {                                     
-        ccr.resolver.ResolveNow(o)                                               
-    }                                                                       
-    ccr.resolverMu.Unlock()                                           
-}                                                                               
+- On successful `transport.NewClientTransport()` returns, `prefaceReceived` channel will receive a hint.
 
+```go
 // createTransport creates a connection to addr. It returns the transport and a
 // Event in the successful case. The Event fires when the returned transport
 // disconnects.
@@ -1139,26 +1278,26 @@ func (ac *addrConn) createTransport(addr resolver.Address, copts transport.Conne
     onGoAway := func(r transport.GoAwayReason) {
         ac.mu.Lock()
         ac.adjustParams(r)
-        once.Do(func() {                                                           
+        once.Do(func() {
             if ac.state == connectivity.Ready {
                 // Prevent this SubConn from being used for new RPCs by setting its
-                // state to Connecting.                                        
-                //                                                      
+                // state to Connecting.
+                //
                 // TODO: this should be Idle when grpc-go properly supports it.
                 ac.updateConnectivityState(connectivity.Connecting, nil)
-            }         
-        })              
-        ac.mu.Unlock()                                                             
+            }
+        })
+        ac.mu.Unlock()
         reconnect.Fire()
-    }                   
-                                               
-    onClose := func() {                                                            
-        ac.mu.Lock()                                                           
-        once.Do(func() {                                                           
-            if ac.state == connectivity.Ready {                                
+    }
+
+    onClose := func() {
+        ac.mu.Lock()
+        once.Do(func() {
+            if ac.state == connectivity.Ready {
                 // Prevent this SubConn from being used for new RPCs by setting its
-                // state to Connecting.                                        
-                //                                                      
+                // state to Connecting.
+                //
                 // TODO: this should be Idle when grpc-go properly supports it.
                 ac.updateConnectivityState(connectivity.Connecting, nil)
             }
@@ -1200,13 +1339,29 @@ func (ac *addrConn) createTransport(addr resolver.Address, copts transport.Conne
     }
     return newTr, reconnect, nil
 }
+```
 
+`NewClientTransport()` calls `newHTTP2Client()` to finish the job.
+
+- `newHTTP2Client()` calls `dial()` to establish the transport connection.
+- If `transportCreds` is set, `newHTTP2Client()` calls `transportCreds.ClientHandshake()` to perform the TLS handshake.
+- `newHTTP2Client()` calls `newFramer()` to create`framer`.
+- `newHTTP2Client()` calls `newControlBuffer()` to create `controlBuffer`.
+- If `t.keepaliveEnabled` is set, `newHTTP2Client()` starts a new goroutine `t.keepalive()`.
+- `newHTTP2Client()` starts a new goroutine `t.reader()` which in charge of reading data from network connection.
+- Finally `newHTTP2Client()` starts a new goroutine `t.loopy.run()` which will reads control frames from `controlBuffer` and processes them.
+
+There is a dedicated chapter to introduce [controlBuffer, loopyWriter and framer](control.md), which provide more detail about their design.
+
+There is also a [Client transport](transport.md#client-transport), which discuss more about transport layer.
+
+```go
 // NewClientTransport establishes the transport with the required ConnectOptions
-// and returns it to the caller.           
-func NewClientTransport(connectCtx, ctx context.Context, addr resolver.Address, opts ConnectOptions, onPrefaceReceipt func(), onGoAway func(GoAwayReason), onClose func()) (ClientTransport, error) {
+// and returns it to the caller.
+func NewClientTransport(connectCtx, ctx context.Context, addr resolver.Address, opts ConnectOptions, onPrefaceReceipt func(), onGoAway func(GoAwayReason), on      Close func()) (ClientTransport, error) {
     return newHTTP2Client(connectCtx, ctx, addr, opts, onPrefaceReceipt, onGoAway, onClose)
 }
-             
+
 // newHTTP2Client constructs a connected ClientTransport to addr based on HTTP2
 // and starts to receive messages on it. Non-nil error returns if construction
 // fails.
@@ -1225,9 +1380,9 @@ func newHTTP2Client(connectCtx, ctx context.Context, addr resolver.Address, opts
             return nil, connectionErrorf(isTemporary(err), err, "transport: error while dialing: %v", err)
         }
         return nil, connectionErrorf(true, err, "transport: Error while dialing %v", err)
-    }                                                                          
+    }
     // Any further errors will close the underlying connection
-    defer func(conn net.Conn) {                 
+    defer func(conn net.Conn) {
         if err != nil {
             conn.Close()
         }
@@ -1282,17 +1437,27 @@ func newHTTP2Client(connectCtx, ctx context.Context, addr resolver.Address, opts
                     if secLevel != credentials.InvalidSecurityLevel && secLevel < credentials.PrivacyAndIntegrity {
                         return nil, connectionErrorf(true, nil, "transport: cannot send secure credentials on an insecure connection")
                     }
-                    }
                 }
             }
         }
         isSecure = true
         if transportCreds.Info().SecurityProtocol == "tls" {
             scheme = "https"
+            scheme = "https"
         }
     }
-    ...
-
+    dynamicWindow := true
+    icwz := int32(initialWindowSize)
+    if opts.InitialConnWindowSize >= defaultWindowSize {
+        icwz = opts.InitialConnWindowSize
+        dynamicWindow = false
+    }
+    writeBufSize := opts.WriteBufferSize
+    readBufSize := opts.ReadBufferSize
+    maxHeaderListSize := defaultClientMaxHeaderListSize
+    if opts.MaxHeaderListSize != nil {
+        maxHeaderListSize = *opts.MaxHeaderListSize
+    }
     t := &http2Client{
         ctx:                   ctx,
         ctxDone:               ctx.Done(), // Cache Done chan.
@@ -1331,9 +1496,30 @@ func newHTTP2Client(connectCtx, ctx context.Context, addr resolver.Address, opts
     } else if md := imetadata.Get(addr); md != nil {
         t.md = md
     }
-    ...
-
     t.controlBuf = newControlBuffer(t.ctxDone)
+    if opts.InitialWindowSize >= defaultWindowSize {
+        t.initialWindowSize = opts.InitialWindowSize
+        dynamicWindow = false
+    }
+    if dynamicWindow {
+        t.bdpEst = &bdpEstimator{
+            bdp:               initialWindowSize,
+            updateFlowControl: t.updateFlowControl,
+        }
+    }
+    if t.statsHandler != nil {
+        t.ctx = t.statsHandler.TagConn(t.ctx, &stats.ConnTagInfo{
+            RemoteAddr: t.remoteAddr,
+            LocalAddr:  t.localAddr,
+        })
+        connBegin := &stats.ConnBegin{
+            Client: true,
+        }
+        t.statsHandler.HandleConn(t.ctx, connBegin)
+    }
+    if channelz.IsOn() {
+        t.channelzID = channelz.RegisterNormalSocket(t, opts.ChannelzParentID, fmt.Sprintf("%s -> %s", t.localAddr, t.remoteAddr))
+    }
     if t.keepaliveEnabled {
         t.kpDormancyCond = sync.NewCond(&t.mu)
         go t.keepalive()
@@ -1345,6 +1531,43 @@ func newHTTP2Client(connectCtx, ctx context.Context, addr resolver.Address, opts
 
     // Send connection preface to server.
     n, err := t.conn.Write(clientPreface)
+    if err != nil {
+        t.Close()
+        return nil, connectionErrorf(true, err, "transport: failed to write client preface: %v", err)
+    }
+    if n != len(clientPreface) {
+        t.Close()
+        return nil, connectionErrorf(true, err, "transport: preface mismatch, wrote %d bytes; want %d", n, len(clientPreface))
+    }
+    var ss []http2.Setting
+
+    if t.initialWindowSize != defaultWindowSize {
+        ss = append(ss, http2.Setting{
+            ID:  http2.SettingInitialWindowSize,
+            Val: uint32(t.initialWindowSize),
+        })
+    }
+    if opts.MaxHeaderListSize != nil {
+        ss = append(ss, http2.Setting{
+            ID:  http2.SettingMaxHeaderListSize,
+            Val: *opts.MaxHeaderListSize,
+        })
+    }
+    err = t.framer.fr.WriteSettings(ss...)
+    if err != nil {
+        t.Close()
+        return nil, connectionErrorf(true, err, "transport: failed to write initial settings frame: %v", err)
+    }
+    // Adjust the connection flow control window if needed.
+    if delta := uint32(icwz - defaultWindowSize); delta > 0 {
+        if err := t.framer.fr.WriteWindowUpdate(0, delta); err != nil {
+            t.Close()
+            return nil, connectionErrorf(true, err, "transport: failed to write window update: %v", err)
+        }
+    }
+
+    t.connectionID = atomic.AddUint64(&clientConnectionCounter, 1)
+
     if err := t.framer.writer.Flush(); err != nil {
         return nil, err
     }
@@ -1367,26 +1590,25 @@ func newHTTP2Client(connectCtx, ctx context.Context, addr resolver.Address, opts
 }
 
 func dial(ctx context.Context, fn func(context.Context, string) (net.Conn, error), addr resolver.Address, useProxy bool, grpcUA string) (net.Conn, error) {
-    address := addr.Addr                                                                                                                                  
+    address := addr.Addr
     networkType, ok := networktype.Get(addr)
     if fn != nil {
-        if networkType == "unix" {
+        if networkType == "unix" && !strings.HasPrefix(address, "\x00") {
             // For backward compatibility, if the user dialed "unix:///path",
-            // the passthrough resolver would be used and the user's custom                                                                        
-            // dialer would see "unix:///path". Since the unix resolver is used                                                                
-            // and the address is now "/path", prepend "unix://" so the user's                                                                              
+            // the passthrough resolver would be used and the user's custom
+            // dialer would see "unix:///path". Since the unix resolver is used
+            // and the address is now "/path", prepend "unix://" so the user's
             // custom dialer sees the same address.
-            return fn(ctx, "unix://"+address)                                                                                                          
-        }                                                                                                                                                  
-        return fn(ctx, address)                                                                                                                        
+            return fn(ctx, "unix://"+address)
+        }
+        return fn(ctx, address)
     }
     if !ok {
         networkType, address = parseDialTarget(address)
-    }                                                                                                                                               
+    }
     if networkType == "tcp" && useProxy {
         return proxyDial(ctx, address, grpcUA)
-    }                                                                                                                                          
+    }
     return (&net.Dialer{}).DialContext(ctx, networkType, address)
-}                                                                                                                                                   
-
+}
 ```
