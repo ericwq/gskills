@@ -106,8 +106,6 @@ func callUnaryEcho(client ecpb.EchoClient, message string) {
 }
 ```
 
-### newCCResolverWrapper()
-
 ### Determine resolver builder
 
 - Client application calls `Dial()`.
@@ -225,8 +223,6 @@ func DialContext(ctx context.Context, target string, opts ...DialOption) (conn *
     return cc, nil
 }
 ```
-
-### ccResolverWrapper.UpdateState()
 
 ### Create resolver
 
@@ -391,8 +387,6 @@ func (ccr *ccResolverWrapper) UpdateState(s resolver.State) {
     ccr.poll(ccr.cc.updateResolverState(ccr.curState, nil))
 }
 ```
-
-### ClientConn.updateResolverState()
 
 ### Apply service config
 
@@ -601,8 +595,6 @@ func (cc *ClientConn) switchBalancer(name string) {
 }
 ```
 
-### newCCBalancerWrapper()
-
 ### Initialize balancer
 
 - In our case, when `newCCBalancerWrapper()` is called, `builder` parameter is `pickfirstBuilder`.
@@ -775,8 +767,6 @@ func (pw *pickerWrapper) updatePicker(p balancer.Picker) {
 }
 ```
 
-### ccBalancerWrapper.updateClientConnState()
-
 ### Update client connection
 
 `ccBalancerWrapper.updateClientConnState()` calls `ccb.balancer.UpdateClientConnState()` to finish the job. In this case, `Balancer` is `pickfirstBalancer`. So `pickfirstBalancer.UpdateClientConnState()` will be called.
@@ -915,8 +905,6 @@ It's time to show the Dial process part II. Part II focus on establishing transp
 - Left red dot represents the box is a continue part from other diagram.
 - Right red dot represents there is a extension diagram for that box.
 
-### addrConn.connect()
-
 ### Update connectivity state
 
 `addrConn.connect()` calls `ac.updateConnectivityState()` to update the connectivity state.
@@ -924,7 +912,9 @@ It's time to show the Dial process part II. Part II focus on establishing transp
 - `ac.updateConnectivityState()` is `addrConn.updateConnectivityState()`.
 - Here, the connectivity state is `connectivity.Connecting`.
 
-`addrConn.connect()` calls `ac.resetTransport()` to connect with the target server. We will discuss `ac.resetTransport()` in next section
+`addrConn.connect()` calls `ac.resetTransport()` to connect with the target server.
+
+We will discuss `ac.updateConnectivityState()` first, then `ac.resetTransport()` in next section.
 
 ```go
 // connect starts creating a transport.
@@ -1049,8 +1039,6 @@ type scStateUpdate struct {
     err   error
 }
 ```
-
-### addrConn.resetTransport()
 
 ### Create transport
 
