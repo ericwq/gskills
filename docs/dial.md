@@ -6,10 +6,12 @@
   - [Create resolver](#create-resolver)
   - [Apply service config](#apply-service-config)
   - [Initialize balancer](#initialize-balancer)
+  - [Watch sub-connection update](#watch-sub-connection-update)
   - [Update client connection](#update-client-connection)
 - [Dial process part II](#dial-process-part-ii)
   - [Update connectivity state](#update-connectivity-state)
   - [Create transport](#create-transport)
+  - [Connect successfully](#connect-successfully)
 
 Client dial is the process to establish the connection with the target server. Client dial is a necessary step before any RPC happens.
 
@@ -669,6 +671,8 @@ func (*pickfirstBuilder) Name() string {
 }
 ```
 
+### Watch sub-connection update
+
 `ccb.watcher()` waits and reads the connection state `t` from a channel `ccb.scBuffer.Get()`
 
 - `t` is an object of type `scStateUpdate`
@@ -1031,7 +1035,7 @@ func (cc *ClientConn) handleSubConnStateChange(sc balancer.SubConn, s connectivi
 - `Unbounded.Put()` sends the message to a channel in `Unbounded` struct.
 - `ccb.watcher()` reads the message from the same channel in `Unbounded` struct.
 
-Please refer to [Initialize balancer](#initialize-balancer) for the detail of `ccb.watcher()`.
+Please refer to [Watch sub-connection update](#watch-sub-connection-update) for the detail of `ccb.watcher()`.
 
 ```go
 func (ccb *ccBalancerWrapper) handleSubConnStateChange(sc balancer.SubConn, s connectivity.State, err error) {
@@ -1095,7 +1099,7 @@ In the last step of `addrConn.connect()`, `addrConn.resetTransport()` will be ca
 - `resetTransport()` calls `ac.tryAllAddrs()`, which is `addrConn.tryAllAddrs()`.
 - If `ac.tryAllAddrs()` returned successfully, `resetTransport()` calls `ac.startHealthCheck()`.
 
-Next we discuss `ac.startHealthCheck()` first. `addrConn.tryAllAddrs()`  will be the last one to discuss.
+Next we discuss `addrConn.tryAllAddrs()` first. `ac.startHealthCheck()` will be the last one to discuss.
 
 ```go
 func (ac *addrConn) resetTransport() {
@@ -1193,57 +1197,6 @@ func (ac *addrConn) resetTransport() {
         // RPC activity that leads to the balancer requesting a reconnect of
         // the associated SubConn.
     }
-}
-```
-
-In `startHealthCheck()`, the defer function will call `ac.updateConnectivityState()` to set the connectivity state to ready.
-
-- Please refer to [Update connectivity state](#update-connectivity-state) for detail.
-- In our case, health check is disabled. Here we will not go deeper into health checking system.
-
-```go
-// startHealthCheck starts the health checking stream (RPC) to watch the health
-// stats of this connection if health checking is requested and configured.
-//
-// LB channel health checking is enabled when all requirements below are met:
-// 1. it is not disabled by the user with the WithDisableHealthCheck DialOption
-// 2. internal.HealthCheckFunc is set by importing the grpc/health package
-// 3. a service config with non-empty healthCheckConfig field is provided
-// 4. the load balancer requests it
-//
-// It sets addrConn to READY if the health checking stream is not started.
-//
-// Caller must hold ac.mu.
-func (ac *addrConn) startHealthCheck(ctx context.Context) {
-    var healthcheckManagingState bool
-    defer func() {
-        if !healthcheckManagingState {
-            ac.updateConnectivityState(connectivity.Ready, nil)
-        }
-    }()
-
-    if ac.cc.dopts.disableHealthCheck {
-        return
-    }
-    healthCheckConfig := ac.cc.healthCheckConfig()
-    if healthCheckConfig == nil {
-        return
-    }
-    if !ac.scopts.HealthCheckEnabled {
-        return
-    }
-+-- 30 lines: healthCheckFunc := ac.cc.dopts.healthCheckFunc······························································································
-    // Start the health checking stream.
-    go func() {
-        err := ac.cc.dopts.healthCheckFunc(ctx, newStream, setConnectivityState, healthCheckConfig.ServiceName)
-        if err != nil {
-            if status.Code(err) == codes.Unimplemented {
-                channelz.Error(logger, ac.channelzID, "Subchannel health check is unimplemented at server side, thus health check is disabled")
-            } else {
-                channelz.Errorf(logger, ac.channelzID, "HealthCheckFunc exits with unexpected error %v", err)
-            }
-        }
-    }()
 }
 ```
 
@@ -1646,5 +1599,62 @@ func dial(ctx context.Context, fn func(context.Context, string) (net.Conn, error
         return proxyDial(ctx, address, grpcUA)
     }
     return (&net.Dialer{}).DialContext(ctx, networkType, address)
+}
+```
+
+### Connect successfully
+
+In `startHealthCheck()`, the defer function will call `ac.updateConnectivityState()` to set the connectivity state to ready.
+
+- In our case, health check is disabled. Here we will not go deeper into health checking system.
+
+That means `ac.updateConnectivityState(connectivity.Ready, nil)` will eventually call `ccBalancerWrapper.UpdateState()`. Which will update the `pickerWrapper.picker` field and the `connectivityStateManager.state` field.
+
+- Please refer to [Update connectivity state](#update-connectivity-state) for sending connectivity state and `SubConn` to `ccBalancerWrapper.watcher()`.
+- Please refer to [Watch sub-connection update](#watch-sub-connection-update) for receiving connectivity state and `SubConn` from `ccBalancerWrapper.watcher()`.
+
+```go
+// startHealthCheck starts the health checking stream (RPC) to watch the health
+// stats of this connection if health checking is requested and configured.
+//
+// LB channel health checking is enabled when all requirements below are met:
+// 1. it is not disabled by the user with the WithDisableHealthCheck DialOption
+// 2. internal.HealthCheckFunc is set by importing the grpc/health package
+// 3. a service config with non-empty healthCheckConfig field is provided
+// 4. the load balancer requests it
+//
+// It sets addrConn to READY if the health checking stream is not started.
+//
+// Caller must hold ac.mu.
+func (ac *addrConn) startHealthCheck(ctx context.Context) {
+    var healthcheckManagingState bool
+    defer func() {
+        if !healthcheckManagingState {
+            ac.updateConnectivityState(connectivity.Ready, nil)
+        }
+    }()
+
+    if ac.cc.dopts.disableHealthCheck {
+        return
+    }
+    healthCheckConfig := ac.cc.healthCheckConfig()
+    if healthCheckConfig == nil {
+        return
+    }
+    if !ac.scopts.HealthCheckEnabled {
+        return
+    }
++-- 30 lines: healthCheckFunc := ac.cc.dopts.healthCheckFunc······························································································
+    // Start the health checking stream.
+    go func() {
+        err := ac.cc.dopts.healthCheckFunc(ctx, newStream, setConnectivityState, healthCheckConfig.ServiceName)
+        if err != nil {
+            if status.Code(err) == codes.Unimplemented {
+                channelz.Error(logger, ac.channelzID, "Subchannel health check is unimplemented at server side, thus health check is disabled")
+            } else {
+                channelz.Errorf(logger, ac.channelzID, "HealthCheckFunc exits with unexpected error %v", err)
+            }
+        }
+    }()
 }
 ```
