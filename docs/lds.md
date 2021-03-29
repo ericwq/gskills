@@ -128,12 +128,13 @@ Example YAML:
 
 In this stage, we will utilizes bootstrap file to create the connection with xDS server. Here is another map for this stage.  In this map:
 
+![xDS protocol: 1](../images/images.009.png)
+
 - Yellow box represents the important type and method/function.
 - Green box represents a function run in a dedicated goroutine.
 - Arrow represents the call direction and order.
-- Red dot means there is another map to be continue for that box.
-
-![xDS protocol: 1](../images/images.009.png)
+- Right red dot represents there is a extension map for that box.
+- Left red dot represents the box is a continue part from other map.
 
 In this stage, we will accomplish the following job:
 
@@ -962,14 +963,15 @@ func (t *TransportHelper) send(ctx context.Context) {
 
 Now the connection with xDS server is ready. Let's discuss how gRPC communicates with the xDS server via ADS v3 API. Here is another map for this stage. In this map:
 
+![xDS protocol: 2](../images/images.010.png)
+
 - Yellow box represents the important type and method/function.
 - Green box represents a function run in a dedicated goroutine.
 - Arrow represents the call direction and order.
-- Red dot means there is another map to be continue for that box.
 - Blue bar and arrow represents the channel communication for `t.sendCh`.
 - Green bar and arrow represents the channel communication for `t.streamCh`.
-
-![xDS protocol: 2](../images/images.010.png)
+- Right red dot represents there is a extension map for that box.
+- Left red dot represents the box is a continue part from other map.
 
 In this stage, we will accomplish the following job:
 
