@@ -1,12 +1,6 @@
 # xDS protocol - CDS/EDS
 
-- [Connect to upstream server](conn.md#connect-to-upstream-server)
-  - [Add sub balancer](conn.md#add-sub-balancer)
-  - [Start balancer](conn.md#start-balancer)
-  - [Update connection state](conn.md#update-connection-state)
-  - [Prepare for the sub-connection](conn.md#prepare-for-the-sub-connection)
-  - [Start connection](conn.md#start-connection)
-  - [Which balancer, which `ClientConn` ?](conn.md#which-balancer-which-clientconn-)
+- [Connect to upstream server](#connect-to-upstream-server)
   - [Connect endpoint](#connect-endpoint)
   - [Update sub-connection state](#update-sub-connection-state)
   - [Update state](#update-state)
@@ -14,9 +8,13 @@
 
 ## Connect to upstream server
 
+Now, we are ready to connect to upstream server.
+
 ### Connect endpoint
 
 This is the third article of EDS processing. Please see [Start connection](conn.md#start-connection) to get more background about this stage. In this stage, we continue the discussion of xDS protocol: connect to upstream server. xDS will create the transport connection with endpoint and notify the connection state to gRPC core. Here is the map for this stage. In this map:
+
+![xDS protocol: 8](../images/images.016.png)
 
 - Yellow box represents the important type and method/function.
 - Green box represents a function run in a dedicated goroutine.
@@ -24,8 +22,6 @@ This is the third article of EDS processing. Please see [Start connection](conn.
 - Grey bar and arrow represents the channel communication for `ccb.scBuffer`.
 - Left red dot represents the box is a continue part from other map.
 - Right red dot represents there is a extension map for that box.
-
-![xDS protocol: 8](../images/images.016.png)
 
 xDS endpoint connect is very similar to [Dial process part II](dial.md#dial-process-part-ii). We will not repeat the similar process. The main difference of xDS endpoint connect is how `ccBalancerWrapper.watcher()` notify xDS. We will focus on this notification, that is the key point of this article.
 
