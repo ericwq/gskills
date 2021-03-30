@@ -13,7 +13,7 @@ xDS use a log of interfaces and wrappers. E.g. `balancer.ClientConn` represents 
 
 ### Resolver
 
-For each connection, there is one resolver. each resolver is wrapped by `ccResolverWrapper`.
+For each connection, there is one resolver. Each resolver is wrapped by `ccResolverWrapper`.
 
 - `ccResolverWrapper.cc` field is of struct type `ClientConn`.
 - `ccResolverWrapper.resolver` field is of type `xdsResolver`.
@@ -208,14 +208,14 @@ type xdsResolver struct {
 
 ### Cluster manager
 
-For each connection, there is only one cluster manager. `newCCBalancerWrapper` creates the cluster manager, which is implemented by struct type `bal`.
+For each connection, there is only one cluster manager. `newCCBalancerWrapper()` creates the `ccBalancerWrapper` and the cluster manager, cluster manager is implemented by struct type `bal` and is wrapped by `ccBalancerWrapper`.
 
 ![xDS protocol: 4](../images/images.012.png)
 
 - In `ClientConn.switchBalancer()`, `newCCBalancerWrapper()` is called to create `ccBalancerWrapper`.
 - `ccBalancerWrapper.cc` is of type `ClientConn`.
 - In `newCCBalancerWrapper()`,
-  - `b.Build()` is actually `builder.Build()`. `balancer.Builder` is chosen by balancer name.
+  - `b.Build()` is actually `builder.Build()`. `balancer.Builder` is chosen by balancer name: `"xds_cluster_manager_experimental"`.
   - `b.Build()` uses `ccb` as argument for `cc` parameter, `ccb` is of type `ccBalancerWrapper`.
 - `ccBalancerWrapper.balancer` is of type `bal`.
 
@@ -253,7 +253,7 @@ In `builder.Build()`,
 - `bal.bg` field is of type `BalancerGroup`.
 - `bal.bg.cc` field is of type `ccBalancerWrapper`.
 
-In `balancergroup.New()`, `b.bg.cc` is of type `ccBalancerWrapper`. Note the balancer group `b.bg` is stared by `b.bg.Start()`.
+In `balancergroup.New()`, `b.bg.cc` is of type `ccBalancerWrapper`. Note the balancer group `b.bg` is started by `b.bg.Start()`.
 
 ```go
 const balancerName = "xds_cluster_manager_experimental"
@@ -438,7 +438,7 @@ func (b *bal) UpdateClientConnState(s balancer.ClientConnState) error {
 }
 ```
 
-For each child policy, `bal.updateChildren()` creates a CDS balancer. in `bal.updateChildren()`, `b.bg.Add()` is called to add CDS sub-balancers to the group.
+For each child policy, `bal.updateChildren()` creates a CDS sub-balancer. In `bal.updateChildren()`, `b.bg.Add()` is called to add CDS sub-balancer to the group.
 
 In `bal.updateChildren()`,
 
@@ -491,7 +491,7 @@ In `BalancerGroup.Add()`,
 
 - The CDS balancer builder and CDS balancer is wrapped by `subBalancerWrapper`.
 - `subBalancerWrapper` implements `balancer.ClientConn`.
-- `subBalancerWrapper.ClientConn` field is of type `ccBalancerWrapper`
+- `subBalancerWrapper.ClientConn` field is of type `ccBalancerWrapper`. The `bg.cc` is `ccBalancerWrapper`.
 
 ```go
 // Add adds a balancer built by builder to the group, with given id.
@@ -600,11 +600,13 @@ For CDS balancer, the balancer group is started by default, which means `bg.outg
 In `subBalancerWrapper.startBalancer()`,
 
 - `sbc.builder.Build()` is called withe `sbc` as the argument of `cc ClientConn` parameter.
-- Here, `sbc.builder` is `cdsBB`. It is one of the CDS balancer builders. There is another builder: `weightedTargetBB`.
+- Here, `sbc.builder` is `cdsBB`. It is one of the CDS balancer builders.
+- The `sbc.builder` is picked by `newT.ChildPolicy.Name`. There is another builder: `weightedTargetBB`.
 - In `cdsBB.Build()`, `ccWrapper` is created.
 - `ccWrapper.ClientConn` field is of type `subBalancerWrapper`.
 - `cdsBalancer.ccw` field is of type `ccWrapper`.
 - `sbc.balancer` field is of type `cdsBalancer`.
+- There is a `cdsBalancer.edsLB` field, which is the EDS balancer. It will be initialized in next section.
 
 ```go
 func (sbc *subBalancerWrapper) startBalancer() {
@@ -778,7 +780,7 @@ In `newEDSBalancer()`,
 - The EDS balancer builder is picked by `edsName`.
 - `newEDSBalancer()` forwards the `cc` argument to `builder.Build()`.
 - `edsBalancer.cc` field is of type `ccWrapper`.
-- EDS balancer has a EDS balancer implementation `edsBalancer.edsImpl`.
+- EDS balancer has a `edsBalancer.edsImpl` field.
 - `edsBalancer.edsImpl` field is `edsBalancerImplInterface` interface type, which is actually of type `edsBalancerImpl`.
 - `edsBalancerImpl.cc` field is of type `ccWrapper`.
 
@@ -947,14 +949,17 @@ func newEDSBalancerImpl(cc balancer.ClientConn, bOpts balancer.BuildOptions, enq
 
 ### Priority locality balancer
 
-Upon receives the EDS update, `edsBalancerImpl.handleEDSResponse()` creates balancer group for each priority locality and adds balancer for each group.
+Upon receives the EDS update, `edsBalancerImpl.handleEDSResponse()` creates one balancer group for each priority locality and adds balancers for each group.
 
 ![xDS protocol: 7](../images/images.015.png)
 
 For each priority, a new balancer group is created.
 
 - `ccPriorityWrapper` is created by `edsImpl.ccWrapperWithPriority()`, `ccPriorityWrapper` is of type `edsBalancerWrapperCC`.
+- From [EDS balancer](#eds-balancer), `edsBalancerImpl.cc` field is of type `ccWrapper`.
+- `edsBalancerWrapperCC.ClientConn` is of type `ccWrapper`.
 - `stateAggregator` is created by `weightedaggregator.New()`, `stateAggregator` is of type `Aggregator`.
+- `balancerGroupWithConfig.bg` is of type `BalancerGroup`.
 - `balancerGroupWithConfig.bg.cc` field is of type `edsBalancerWrapperCC`.
 - `balancerGroupWithConfig.stateAggregator.cc` field is of type `edsBalancerWrapperCC`.
 
@@ -1108,7 +1113,7 @@ Under specified priority, `edsBalancerImpl.handleEDSResponsePerPriority()` adds 
 - In `newEDSBalancerImpl()`, `edsImpl.subBalancerBuilder` is created by pick the builder name `"round_robin"`.
 - `edsImpl.subBalancerBuilder` is actually `baseBuilder`.
 - The priority locality balancer and builder is wrapped by `subBalancerWrapper`.
-- Note this `subBalancerWrapper` is different with the `subBalancerWrapper` in CDS balancer.
+- Note this `subBalancerWrapper` is different with the `subBalancerWrapper` in CDS balancer. Their builder and balancer is different.
 - `subBalancerWrapper.ClientConn` is of type `edsBalancerWrapperCC`.
 
 Once `subBalancerWrapper.startBalancer()` is called by `edsBalancerImpl.startPriority()`,
