@@ -24,12 +24,12 @@ This is the second article of EDS processing. xDS protocol is a complex protocol
 
 In this stage, we continue the discussion of xDS protocol: connect to upstream server.  Here is the map for this stage. In this map:
 
+![xDS protocol: 7](../images/images.015.png)
+
 - Yellow box represents the important type and method/function.
 - Arrow represents the call direction and order.
 - Left red dot represents the box is a continue part from other map.
 - Right red dot represents there is a extension map for that box.
-
-![xDS protocol: 7](../images/images.015.png)
 
 `handleEDSResponse()` creates a balancer group for each priority. Then `handleEDSResponse()` calls `edsImpl.handleEDSResponsePerPriority()` for each priority.
 
@@ -823,7 +823,7 @@ func (cc *ClientConn) newAddrConn(addrs []resolver.Address, opts balancer.NewSub
 `acBalancerWrapper.Connect()` is the real connection with the endpoint. Generally, the process is similar to [Dial process part I](dial.md#dial-process-part-i).
 
 - `acBalancerWrapper.Connect()` calls `acbw.ac.connect()`, which is actually `addrConn.connect()`
-- There is a dedicated article about `addrConn.connect()`. See [Connect endpoint](conn2.md) for detail.
+- There is a dedicated article about `addrConn.connect()`. See [Connect to upstream server](conn2.md) for detail.
 
 ```go
 func (acbw *acBalancerWrapper) Connect() {

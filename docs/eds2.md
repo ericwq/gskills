@@ -476,7 +476,7 @@ The response endpoints is re-ordered by priority. Each priority has a balancer g
   - `edsImpl.startPriority()` calls `p.bg.Start()` to start the `BalancerGroup`.
   - `edsImpl.startPriority()` also starts a timer to fall to next priority after timeout.
 
-Next, Let's discuss the behaviour of `edsImpl.handleEDSResponsePerPriority()`. Please continue to read [Connect to upstream server](conn.md)  for detail.
+Next, Let's discuss the behaviour of `edsImpl.handleEDSResponsePerPriority()`. Please continue to read [Prepare for connect](conn.md)  for detail.
 
 ```go
 func (x *edsBalancer) handleXDSClientUpdate(update *edsUpdate) {
