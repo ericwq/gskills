@@ -97,6 +97,8 @@ The cluster manager has a balancer group, which contains CDS balancers. Each CDS
 
 In this stage, xDS will notify the connection state to gRPC core. Here is the map for this stage. In this map:
 
+![xDS protocol: 9](../images/images.017.png)
+
 - Yellow box represents the important type and method/function.
 - Green box represents a function run in a dedicated goroutine.
 - Arrow represents the call direction and order.
@@ -105,7 +107,7 @@ In this stage, xDS will notify the connection state to gRPC core. Here is the ma
 - Left red dot represents the box is a continue part from other map.
 - Right red dot represents there is a extension map for that box.
 
-![xDS protocol: 9](../images/images.017.png)
+We start from `bal.UpdateSubConnState()`. To avoid lost in the interface and wrapper, you can refer to [xDS wrappers](wrappers.md).
 
 - `bal.UpdateSubConnState()` calls `b.bg.UpdateSubConnState()`, Here `b.bg` is the EDS balancer group.
 - `b.bg.UpdateSubConnState()` is actually `BalancerGroup.UpdateSubConnState()`.

@@ -1,15 +1,25 @@
 # xDS protocol - CDS/EDS
 
-- [Wrappers for X](#wrappers-for-x)
+- [xDS wrappers](#xds-wrappers)
   - [Resolver](#resolver)
   - [Cluster Manager](#cluster-manager)
   - [CDS balancer](#cds-balancer)
   - [EDS balancer](#eds-balancer)
   - [Priority locality balancer](#priority-locality-balancer)
 
-## Wrappers for X
+## xDS wrappers
 
 xDS use a log of interfaces and wrappers. E.g. `balancer.ClientConn` represents a gRPC `ClientConn`. In gRPC, different module uses different wrapper which implements the same interface. `ccBalancerWrapper` and `subBalancerWrapper` are typical wrappers. They implement the same interface with different behavior. If you want to understand the source code of xDS, it is better to find out the interface is implemented by which wrappers.
+
+The following diagram is the quick answer for the above questions. The following sections describe how this diagram is formed.
+
+![xDS wrappers](../images/images.020.png)
+
+- Yellow box represents important type and main field, "::" represents the field name.
+- Blue line represents the most important relationship between two types.
+- `1   *` represents one to many relationship.
+- Red line highlights path of `ClientConn`.
+- Black line and text represents the significant relationship between tow types.
 
 ### Resolver
 
@@ -252,8 +262,7 @@ In `builder.Build()`,
 - `bal.stateAggregator.cc` field is of type `ccBalancerWrapper`.
 - `bal.bg` field is of type `BalancerGroup`.
 - `bal.bg.cc` field is of type `ccBalancerWrapper`.
-
-In `balancergroup.New()`, `b.bg.cc` is of type `ccBalancerWrapper`. Note the balancer group `b.bg` is started by `b.bg.Start()`.
+- Note the balancer group `b.bg` is started by `b.bg.Start()`.
 
 ```go
 const balancerName = "xds_cluster_manager_experimental"

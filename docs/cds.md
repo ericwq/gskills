@@ -30,7 +30,7 @@
   - [Update sub-connection state](conn2.md#update-sub-connection-state)
   - [Update state](conn2.md#update-state)
   - [Get notification](conn2.md#get-notification)
-- [Wrappers for X](wrappers.md#wrappers-for-x)
+- [xDS wrappers](wrappers.md)
 
 In the previous article [xDS protocol - LDS/RDS](lds.md), we discussed the xDS resolver and LDS/RDS. In this article we will discuss the xDS balancer and CDS/EDS. Why gRPC separates the ADS into two phases: LDS and CDS? In my guess: RDS returns a group of cluster name based on the domain matched `Route`. The matching `path` and other matching criteria can only be performed after we receive a real RPC request. It has to postpone the CDS/EDS to that time.
 
