@@ -1,8 +1,13 @@
 # xDS picker
 
 - [Update sub-connection state](#update-sub-connection-state)
+  - [Round-robin picker](#round-robin-picker)
 - [Update state](#update-state)
-- [Pick connection](#pick-connection)
+  - [Load report picker](#load-report-picker)
+  - [Weighted picker group](#weighted-picker-group)
+  - [Drop picker](#drop-picker)
+  - [Picker group](#picker-group)
+- [Pick a connection](#pick-a-connection)
 
 Through the discussion from [xDS protocol - LDS/RDS](lds.md) and [xDS protocol - CDS/EDS](cds.md), we have connected with the upstream server. There is a key question to answer: For each RPC request which connection will be used ? Who decide it?
 
@@ -83,57 +88,15 @@ const (
 
 ![xDS protocol: 9](../images/images.017.png)
 
-- `bal.UpdateSubConnState()` calls `b.bg.UpdateSubConnState()` and forwards `SubConn` and `SubConnState`.
-- `BalancerGroup.UpdateSubConnState()` calls `config.updateSubConnState()` and forwards `SubConn` and `SubConnState`.
-- `subBalancerWrapper.updateSubConnState()` calls `b.UpdateSubConnState()` and forwards `SubConn` and `SubConnState`.  
-- `cdsBalancer.UpdateSubConnState()` wraps `SubConn` and `SubConnState` into `scUpdate` and sends it to `cdsBalancer.run()`.
+`bal.UpdateSubConnState()` calls `b.bg.UpdateSubConnState()` and forwards `SubConn`, `SubConnState` to `BalancerGroup`.
 
 ```go
-// UpdateSubConnState handles subConn updates from gRPC.
-func (b *cdsBalancer) UpdateSubConnState(sc balancer.SubConn, state balancer.SubConnState) {
-    if b.closed.HasFired() {
-        b.logger.Warningf("xds: received subConn update {%v, %v} after cdsBalancer was closed", sc, state)
-        return
-    }
-    b.updateCh.Put(&scUpdate{subConn: sc, state: state})
-}
-
-// scUpdate wraps a subConn update received from gRPC. This is directly passed
-// on to the edsBalancer.
-type scUpdate struct {
-    subConn balancer.SubConn
-    state   balancer.SubConnState
+func (b *bal) UpdateSubConnState(sc balancer.SubConn, state balancer.SubConnState) {
+    b.bg.UpdateSubConnState(sc, state)
 }
 ```
 
-- `cdsBalancer.run()` receives `scUpdate`, splits it into `SubConn` and `SubConnState` and calls `b.edsLB.UpdateSubConnState()`
-- `edsBalancer.UpdateSubConnState()` sends `SubConn` and `SubConnState` to `edsBalancer.run()`.
-  - Combines `SubConn` and `SubConnState` into `subConnStateUpdate`.
-
-```go
-type subConnStateUpdate struct {
-    sc    balancer.SubConn
-    state balancer.SubConnState
-}
-
-func (x *edsBalancer) UpdateSubConnState(sc balancer.SubConn, state balancer.SubConnState) {
-    update := &subConnStateUpdate{
-        sc:    sc,
-        state: state,
-    }
-    select {
-    case x.grpcUpdate <- update:
-    case <-x.closed.Done():
-    }
-}
-```
-
-- `edsBalancer.run()` receives the `subConnStateUpdate` and calls `edsBalancer.handleGRPCUpdate()`.
-- `edsBalancer.handleGRPCUpdate()` calls `x.edsImpl.handleSubConnStateChange()` and splits the message into `SubConn` and `connectivity.State`.
-- `edsBalancerImpl.handleSubConnStateChange()` calls `bg.UpdateSubConnState()` with `SubConn` and `SubConnState` as parameters.
-- `BalancerGroup.UpdateSubConnState()` calls `config.updateSubConnState()` with `SubConn` and `SubConnState` as parameters.
-  - `UpdateSubConnState()` finds the `subBalancerWrapper` based on the `SubConn` parameter, and calls `updateSubConnState()`.
-  - `UpdateSubConnState()` deletes sub-connection from the map when state changed to Shutdown.
+`BalancerGroup.UpdateSubConnState()` calls `config.updateSubConnState()` and forwards `SubConn`, `SubConnState` to `subBalancerWrapper`.
 
 ```go
 // Following are actions from the parent grpc.ClientConn, forward to sub-balancers.
@@ -159,28 +122,270 @@ func (bg *BalancerGroup) UpdateSubConnState(sc balancer.SubConn, state balancer.
 }
 ```
 
-- `subBalancerWrapper.updateSubConnState()` calls `b.UpdateSubConnState()` with `SubConn` and `SubConnState` as parameters.
+`subBalancerWrapper.updateSubConnState()` calls `b.UpdateSubConnState()` and forwards `SubConn`, `SubConnState` to `csdBalancer`.  
 
 ```go
-// UpdateState overrides balancer.ClientConn, to keep state and picker.
-func (sbc *subBalancerWrapper) UpdateState(state balancer.State) {
-    sbc.mu.Lock()
-    sbc.state = state
-    sbc.group.updateBalancerState(sbc.id, state)
-    sbc.mu.Unlock()
+func (sbc *subBalancerWrapper) updateSubConnState(sc balancer.SubConn, state balancer.SubConnState) {
+    b := sbc.balancer
+    if b == nil {
+        // This sub-balancer was closed. This can happen when EDS removes a
+        // locality. The balancer for this locality was already closed, and the
+        // SubConns are being deleted. But SubConn state change can still
+        // happen.
+        return
+    }
+    b.UpdateSubConnState(sc, state)
 }
 ```
 
+`cdsBalancer.UpdateSubConnState()` wraps `SubConn`, `SubConnState` into `scUpdate` and sends it to `b.updateCh`.
+
+```go
+// UpdateSubConnState handles subConn updates from gRPC.
+func (b *cdsBalancer) UpdateSubConnState(sc balancer.SubConn, state balancer.SubConnState) {
+    if b.closed.HasFired() {
+        b.logger.Warningf("xds: received subConn update {%v, %v} after cdsBalancer was closed", sc, state)
+        return
+    }
+    b.updateCh.Put(&scUpdate{subConn: sc, state: state})
+}
+
+// scUpdate wraps a subConn update received from gRPC. This is directly passed
+// on to the edsBalancer.
+type scUpdate struct {
+    subConn balancer.SubConn
+    state   balancer.SubConnState
+}
+```
+
+`cdsBalancer.run()` receives `scUpdate` from `b.updateCh`, splits it into `SubConn` and `SubConnState` and calls `b.edsLB.UpdateSubConnState()`.
+
+- `b.edsLB` is `edsBalancer`.
+
+```go
+// run is a long-running goroutine which handles all updates from gRPC. All
+// methods which are invoked directly by gRPC or xdsClient simply push an
+// update onto a channel which is read and acted upon right here.
+func (b *cdsBalancer) run() {
+    for {
+        select {
+        case u := <-b.updateCh.Get():
+            b.updateCh.Load()
+            switch update := u.(type) {
+            case *ccUpdate:
+                b.handleClientConnUpdate(update)
+            case *scUpdate:
+                // SubConn updates are passthrough and are simply handed over to
+                // the underlying edsBalancer.
+                if b.edsLB == nil {
+                    b.logger.Errorf("xds: received scUpdate {%+v} with no edsBalancer", update)
+                    break
+                }
+                b.edsLB.UpdateSubConnState(update.subConn, update.state)
+            case *watchUpdate:
+                b.handleWatchUpdate(update)
+            }
+
+        // Close results in cancellation of the CDS watch and closing of the
+        // underlying edsBalancer and is the only way to exit this goroutine.
+        case <-b.closed.Done():
+            b.cancelWatch()
+            b.cancelWatch = func() {}
+
+            if b.edsLB != nil {
+                b.edsLB.Close()
+                b.edsLB = nil
+            }
+            b.xdsClient.Close()
+            // This is the *ONLY* point of return from this function.
+            b.logger.Infof("Shutdown")
+            return
+        }
+    }
+}
+```
+
+- `edsBalancer.UpdateSubConnState()` wraps `SubConn`, `SubConnState` into `subConnStateUpdate`.
+- `edsBalancer.UpdateSubConnState()` sends `update` to channel `x.grpcUpdate`.
+
+```go
+type subConnStateUpdate struct {
+    sc    balancer.SubConn
+    state balancer.SubConnState
+}
+
+func (x *edsBalancer) UpdateSubConnState(sc balancer.SubConn, state balancer.SubConnState) {
+    update := &subConnStateUpdate{
+        sc:    sc,
+        state: state,
+    }
+    select {
+    case x.grpcUpdate <- update:
+    case <-x.closed.Done():
+    }
+}
+```
+
+`edsBalancer.run()` receives the `subConnStateUpdate` from channel `x.grpcUpdate` and calls `edsBalancer.handleGRPCUpdate()`.
+
+```go
+// run gets executed in a goroutine once edsBalancer is created. It monitors
+// updates from grpc, xdsClient and load balancer. It synchronizes the
+// operations that happen inside edsBalancer. It exits when edsBalancer is
+// closed.
+func (x *edsBalancer) run() {
+    for {
+        select {
+        case update := <-x.grpcUpdate:
+            x.handleGRPCUpdate(update)
+        case update := <-x.xdsClientUpdate:
+            x.handleXDSClientUpdate(update)
+        case update := <-x.childPolicyUpdate.Get():
+            x.childPolicyUpdate.Load()
+            u := update.(*balancerStateWithPriority)
+            x.edsImpl.updateState(u.priority, u.s)
+        case <-x.closed.Done():
+            x.cancelWatch()
+            x.xdsClient.Close()
+            x.edsImpl.close()
+            return
+        }
+    }
+}
+```
+
+`edsBalancer.handleGRPCUpdate()` calls `x.edsImpl.handleSubConnStateChange()` for `subConnStateUpdate`.
+
+- `edsBalancer.handleGRPCUpdate()` splits the message into `SubConn` and `connectivity.State` as the parameter for `x.edsImpl.handleSubConnStateChange()`.
+- `x.edsImpl` is `edsBalancerImpl`.
+
+```go
+func (x *edsBalancer) handleGRPCUpdate(update interface{}) {
+    switch u := update.(type) {
+    case *subConnStateUpdate:
+        x.edsImpl.handleSubConnStateChange(u.sc, u.state.ConnectivityState)
+    case *balancer.ClientConnState:
+        x.logger.Infof("Receive update from resolver, balancer config: %+v", u.BalancerConfig)
+        cfg, _ := u.BalancerConfig.(*EDSConfig)
+        if cfg == nil {
+            // service config parsing failed. should never happen.
+            return
+        }
+
+        if err := x.handleServiceConfigUpdate(cfg); err != nil {
+            x.logger.Warningf("failed to update xDS client: %v", err)
+        }
+
+        x.edsImpl.updateServiceRequestsConfig(cfg.EDSServiceName, cfg.MaxConcurrentRequests)
+
+        // We will update the edsImpl with the new child policy, if we got a
+        // different one.
+        if !cmp.Equal(cfg.ChildPolicy, x.config.ChildPolicy, cmpopts.EquateEmpty()) {
+            if cfg.ChildPolicy != nil {
+                x.edsImpl.handleChildPolicy(cfg.ChildPolicy.Name, cfg.ChildPolicy.Config)
+            } else {
+                x.edsImpl.handleChildPolicy(roundrobin.Name, nil)
+            }
+        }
+        x.config = cfg
+    case error:
+        x.handleErrorFromUpdate(u, true)
+    default:
+        // unreachable path
+        x.logger.Errorf("wrong update type: %T", update)
+    }
+}
+```
+
+`edsBalancerImpl.handleSubConnStateChange()` calls `bg.UpdateSubConnState()` with `SubConn` and `SubConnState` as parameters.
+
+- `handleSubConnStateChange()` find `bgwc` with `sc`.
+- `handleSubConnStateChange()` generates `balancer.SubConnState` with `ConnectivityState` is `s`.
+- `bg` is `BalancerGroup`. It's the priority balancer group.
+
+```go
+// handleSubConnStateChange handles the state change and update pickers accordingly.
+func (edsImpl *edsBalancerImpl) handleSubConnStateChange(sc balancer.SubConn, s connectivity.State) {
+    edsImpl.subConnMu.Lock()
+    var bgwc *balancerGroupWithConfig
+    if p, ok := edsImpl.subConnToPriority[sc]; ok {
+        if s == connectivity.Shutdown {
+            // Only delete sc from the map when state changed to Shutdown.
+            delete(edsImpl.subConnToPriority, sc)
+        }
+        bgwc = edsImpl.priorityToLocalities[p]
+    }
+    edsImpl.subConnMu.Unlock()
+    if bgwc == nil {
+        edsImpl.logger.Infof("edsBalancerImpl: priority not found for sc state change")
+        return
+    }
+    if bg := bgwc.bg; bg != nil {
+        bg.UpdateSubConnState(sc, balancer.SubConnState{ConnectivityState: s})
+    }
+}
+```
+
+`BalancerGroup.UpdateSubConnState()` calls `config.updateSubConnState()` with `SubConn`, `SubConnState` as parameters.
+
+- `UpdateSubConnState()` finds the `subBalancerWrapper` based on the `sc` parameter, and calls `config.updateSubConnState()`.
+- `UpdateSubConnState()` deletes sub-connection from the map when state changed to `Shutdown`.
+- `config` is `subBalancerWrapper`.
+
+```go
+// Following are actions from the parent grpc.ClientConn, forward to sub-balancers.
+
+// UpdateSubConnState handles the state for the subconn. It finds the
+// corresponding balancer and forwards the update.
+func (bg *BalancerGroup) UpdateSubConnState(sc balancer.SubConn, state balancer.SubConnState) {
+    bg.incomingMu.Lock()
+    config, ok := bg.scToSubBalancer[sc]
+    if !ok {
+        bg.incomingMu.Unlock()
+        return
+    }
+    if state.ConnectivityState == connectivity.Shutdown {
+        // Only delete sc from the map when state changed to Shutdown.
+        delete(bg.scToSubBalancer, sc)
+    }
+    bg.incomingMu.Unlock()
+
+    bg.outgoingMu.Lock()
+    config.updateSubConnState(sc, state)
+    bg.outgoingMu.Unlock()
+}
+```
+
+`subBalancerWrapper.updateSubConnState()` calls `b.UpdateSubConnState()` with `SubConn` and `SubConnState` as parameters.
+
+- `b` is `baseBalancer`.
+
+```go
+func (sbc *subBalancerWrapper) updateSubConnState(sc balancer.SubConn, state balancer.SubConnState) {
+    b := sbc.balancer
+    if b == nil {
+        // This sub-balancer was closed. This can happen when EDS removes a
+        // locality. The balancer for this locality was already closed, and the
+        // SubConns are being deleted. But SubConn state change can still
+        // happen.
+        return
+    }
+    b.UpdateSubConnState(sc, state)
+}
+```
+
+### Round-robin picker
+
 `baseBalancer.UpdateSubConnState()` calls `b.regeneratePicker()` first.
 
-- `regeneratePicker()` filters out all ready sub-connections.
-- `regeneratePicker()` calls `b.pickerBuilder.Build()` to generates a picker.
+- `b.regeneratePicker()` filters out all ready sub-connections.
+- `b.regeneratePicker()` calls `b.pickerBuilder.Build()` to generates a picker.
 - From [xDS wrappers](wrappers.md#xds-wrappers), we know `b.pickerBuilder` is `rrPickerBuilder`.
-- `Build()` generates a `rrPicker`, which contains all read state sub-connection.
-- `regeneratePicker()` assigns the `rrPicker` to `b.picker`.
+- `rrPickerBuilder.Build()` generates a `rrPicker`, which contains all ready state sub-connections.
+- `b.regeneratePicker()` assigns the `rrPicker` to `b.picker`.
 - `rrPicker.Pick()` uses round-robin policy to decide which sub-connection is picked.
 
-`baseBalancer.UpdateSubConnState()` calls `b.cc.UpdateState()` in the last step.
+`baseBalancer.UpdateSubConnState()` calls `b.cc.UpdateState()` to forward `balancer.State` to `subBalancerWrapper`.
 
 - Note the `SubConn` and `SubConnState` parameters is transformed into `balancer.State`.
 - `balancer.State` contains only `ConnectivityState` and `Picker`.
@@ -268,6 +473,11 @@ type SubConnInfo struct {
     Address resolver.Address // the address used to create this SubConn
 }
 
+type subConnInfo struct {
+    subConn balancer.SubConn
+    attrs   *attributes.Attributes
+}
+
 // PickerBuilder creates balancer.Picker.
 type PickerBuilder interface {
     // Build returns a picker that will be used by gRPC to pick a SubConn.
@@ -325,7 +535,10 @@ type State struct {
 
 ## Update state
 
-`subBalancerWrapper.UpdateState()` calls `sbc.group.updateBalancerState()`, besides `balancer.State` parameter, it adds `sbc.id` as parameter.
+`subBalancerWrapper.UpdateState()` calls `sbc.group.updateBalancerState()`.
+
+- Besides `balancer.State` parameter, `subBalancerWrapper.UpdateState()` adds `sbc.id` parameter.  
+- From this point, `sbc.id` helps to identify which `subConn` is used.
 
 ```go
 // UpdateState overrides balancer.ClientConn, to keep state and picker.
@@ -337,13 +550,18 @@ func (sbc *subBalancerWrapper) UpdateState(state balancer.State) {
 }
 ```
 
-`updateBalancerState()` wraps the picker to do load reporting if `loadStore` was set.
+### Load report picker
 
+`BalancerGroup.updateBalancerState()` adds load reporting feature to the original picker if `loadStore` was set.
+
+- For `balancerGroupWithConfig.bg`, `BalancerGroup.loadStore` is set to `edsImpl.loadReporter`, which is actually `edsBalancer.lsw`, a `loadStoreWrapper`.
+- For `bal.bg`, `BalancerGroup.loadStore` is set to nil.
+- Here the `loadStore` is set.
 - `newLoadReportPicker()` generates `loadReportPicker`.
 - `loadReportPicker.Pick()` calls `lrp.p.Pick()` to let the original `picker` does the job.
-- `loadReportPicker.Pick()` perform load reporting job for this RPC. We will not discuss load reporting in this article.
+- `loadReportPicker.Pick()` performs load reporting for this RPC. We will not discuss load reporting in this article.
 
-`updateBalancerState()` calls `bg.stateAggregator.UpdateState()` to send new state to the `aggregator`.
+`BalancerGroup.updateBalancerState()` calls `bg.stateAggregator.UpdateState()` to send new state to the `Aggregator`.
 
 ```go
 // updateBalancerState: forward the new state to balancer state aggregator. The
@@ -411,15 +629,20 @@ func (lrp *loadReportPicker) Pick(info balancer.PickInfo) (balancer.PickResult, 
 }
 ```
 
-- `Aggregator.UpdateState()` first updates the state in `wbsa.idToPickerState[id]`.
-- `Aggregator.UpdateState()` calls `wbsa.build()` to update the `aggregator` state.
-  - `wbsa.build()` iterates `wbsa.idToPickerState` to set `aggregatedState`.
-  - `wbsa.build()` sets `picker` based on `aggregatedState`.
-  - For `connectivity.Ready`, `wbsa.build()` calls `newWeightedPickerGroup()` to set the `picker`.
-  - `wbsa.build()` generates `balancer.State` based on `aggregatedState` and `picker`.
-- `Aggregator.UpdateState()` calls `wbsa.cc.UpdateState()` to propagate the state to next level.
+### Weighted picker group
 
-Note the single sub-connection state is transformed into aggregated state after `Aggregator.UpdateState()`.
+`Aggregator.UpdateState()` first updates the state in `wbsa.idToPickerState[id]`.
+
+`Aggregator.UpdateState()` calls `wbsa.build()` to update the `aggregator` state.
+
+- `wbsa.build()` checks `wbsa.idToPickerState` to set `aggregatedState`.
+- `wbsa.build()` sets new `picker` based on `aggregatedState`.
+- For `aggregatedState` is `connectivity.Ready`, `wbsa.build()` calls `newWeightedPickerGroup()` to set the `picker`. We will discuss `newWeightedPickerGroup()` in the following section.
+- `wbsa.build()` generates `balancer.State` based on `aggregatedState` and `picker`.
+
+`Aggregator.UpdateState()` calls `wbsa.cc.UpdateState()` to propagate the state to `edsBalancerWrapperCC`.
+
+After `wbsa.build()` the single sub-connection state is transformed into aggregated state.
 
 ```go
 // UpdateState is called to report a balancer state change from sub-balancer.
@@ -448,6 +671,36 @@ func (wbsa *Aggregator) UpdateState(id string, newState balancer.State) {
         return
     }
     wbsa.cc.UpdateState(wbsa.build())
+}
+
+// Aggregator is the weighted balancer state aggregator.
+type Aggregator struct {
+    cc     balancer.ClientConn
+    logger *grpclog.PrefixLogger
+    newWRR func() wrr.WRR
+
+    mu sync.Mutex
+    // If started is false, no updates should be sent to the parent cc. A closed
+    // sub-balancer could still send pickers to this aggregator. This makes sure
+    // that no updates will be forwarded to parent when the whole balancer group
+    // and states aggregator is closed.
+    started bool
+    // All balancer IDs exist as keys in this map, even if balancer group is not
+    // started.
+    //
+    // If an ID is not in map, it's either removed or never added.
+    idToPickerState map[string]*weightedPickerState
+}
+
+type weightedPickerState struct {
+    weight uint32
+    state  balancer.State
+    // stateToAggregate is the connectivity state used only for state
+    // aggregation. It could be different from state.ConnectivityState. For
+    // example when a sub-balancer transitions from TransientFailure to
+    // connecting, state.ConnectivityState is Connecting, but stateToAggregate
+    // is still TransientFailure.
+    stateToAggregate connectivity.State
 }
 
 // build combines sub-states into one.
@@ -491,8 +744,13 @@ func (wbsa *Aggregator) build() balancer.State {
 }
 ```
 
-- The `newWRR` parameter of `newWeightedPickerGroup()` is `wbsa.newWRR` field.
-- `newWeightedPickerGroup()` creates a `weightedPickerGroup`.
+`newWeightedPickerGroup()` creates a `weightedPickerGroup`.
+
+- The `newWRR` parameter of `newWeightedPickerGroup()` is `wbsa.newWRR`.
+- `newWeightedPickerGroup()` calls `newWRR()` to initialize `w`.
+- `newWeightedPickerGroup()` adds all the ready `picker` to `w`.
+- Note `wrr.WRR` is an interface.
+- What is `wbsa.newWRR`? Please read next section.
 - `weightedPickerGroup.Pick()` uses weighted round robin algorithm to return the pick result.
 
 ```go
@@ -523,6 +781,18 @@ func (pg *weightedPickerGroup) Pick(info balancer.PickInfo) (balancer.PickResult
     }
     return p.Pick(info)
 }
+
+// WRR defines an interface that implements weighted round robin.
+type WRR interface {
+    // Add adds an item with weight to the WRR set.
+    //
+    // Add and Next need to be thread safe.
+    Add(item interface{}, weight int64)
+    // Next returns the next picked item.
+    //
+    // Add and Next need to be thread safe.
+    Next() interface{}
+}
 ```
 
 - `wbsa.newWRR` is initialized in `New()`.
@@ -541,6 +811,7 @@ func New(cc balancer.ClientConn, logger *grpclog.PrefixLogger, newWRR func() wrr
         idToPickerState: make(map[string]*weightedPickerState),
     }
 }
+
 func (edsImpl *edsBalancerImpl) handleEDSResponse(edsResp xdsclient.EndpointsUpdate) {
 +-- 45 lines: TODO: Unhandled fields from EDS response:··································································································
     for priority, newLocalities := range newLocalitiesWithPriority {
@@ -609,22 +880,16 @@ func (rw *randomWRR) Add(item interface{}, weight int64) {
     rw.sumOfWeights += weight
 }
 
-// WRR defines an interface that implements weighted round robin.
-type WRR interface {
-    // Add adds an item with weight to the WRR set.
-    //
-    // Add and Next need to be thread safe.
-    Add(item interface{}, weight int64)
-    // Next returns the next picked item.
-    //
-    // Add and Next need to be thread safe.
-    Next() interface{}
+// weightedItem is a wrapped weighted item that is used to implement weighted random algorithm.
+type weightedItem struct {
+    Item   interface{}
+    Weight int64
 }
 ```
 
 Let's continue the discussion of `Aggregator.UpdateState()`. `Aggregator.UpdateState()` calls `wbsa.cc.UpdateState()`.
 
-`edsBalancerWrapperCC.UpdateState()` calls `ebwcc.parent.enqueueChildBalancerStateUpdate()` and adds `ebwcc.priority` parameter besides `state` parameter
+`edsBalancerWrapperCC.UpdateState()` calls `ebwcc.parent.enqueueChildBalancerStateUpdate()` with an extra `ebwcc.priority` parameter.
 
 ```go
 func (ebwcc *edsBalancerWrapperCC) UpdateState(state balancer.State) {
@@ -667,9 +932,11 @@ var (
 )
 ```
 
-`enqueueState` parameter is initialized by `x.enqueueChildBalancerState` which is `edsBalancer.enqueueChildBalancerState`.
+`enqueueState` parameter is initialized by `x.enqueueChildBalancerState` which is `edsBalancer.enqueueChildBalancerState`. This means `ebwcc.parent.enqueueChildBalancerStateUpdate` is `edsBalancer.enqueueChildBalancerState`.
 
-This means `ebwcc.parent.enqueueChildBalancerStateUpdate` is `edsBalancer.enqueueChildBalancerState`.
+`edsBalancer.enqueueChildBalancerState()` sends `balancerStateWithPriority` to channel `x.childPolicyUpdate`.
+
+- `balancerStateWithPriority` contains `priorityType` and `balancer.State`.
 
 ```go
 // Build helps implement the balancer.Builder interface.
@@ -706,18 +973,7 @@ func (x *edsBalancer) enqueueChildBalancerState(p priorityType, s balancer.State
 }
 ```
 
-`edsBalancer.enqueueChildBalancerState()` sends `balancerStateWithPriority`, which contains `priorityType` and `balancer.State`, to channel `x.childPolicyUpdate`.
-
-```go
-func (x *edsBalancer) enqueueChildBalancerState(p priorityType, s balancer.State) {
-    x.childPolicyUpdate.Put(&balancerStateWithPriority{
-        priority: p,
-        s:        s,
-    })
-}
-```
-
-Upon receives `balancerStateWithPriority` from channel `x.childPolicyUpdate.Get()`, `edsBalancer.run()` calls `x.edsImpl.updateState()` to forward `priorityType` and `balancer.State`.
+Upon receives `balancerStateWithPriority` from channel `x.childPolicyUpdate.Get()`, `edsBalancer.run()` calls `x.edsImpl.updateState()` to forward `priorityType`, `balancer.State` to `edsBalancerImpl`.
 
 ```go
 // run gets executed in a goroutine once edsBalancer is created. It monitors
@@ -745,19 +1001,18 @@ func (x *edsBalancer) run() {
 }
 ```
 
+### Drop picker
+
 `edsBalancerImpl.updateState()` calls `edsImpl.handlePriorityWithNewState()` to start/close priorities based on the connectivity state. It returns whether the state should be forwarded to parent `ClientConn`. If `edsImpl.handlePriorityWithNewState()` returns true, `edsBalancerImpl.updateState()` forwards the state to `edsImpl.cc`.
 
 - `edsImpl.handlePriorityWithNewState()` updates `edsImpl.priorityToState[priority]`.
 - For `connectivity.Ready`, `edsImpl.handlePriorityWithNewState()` calls `edsImpl.handlePriorityWithNewStateReady()`.
-- `edsImpl.handlePriorityWithNewStateReady()` handles state Ready and decides whether to forward update or not.
+- `edsImpl.handlePriorityWithNewStateReady()` handles state and decides whether to forward update or not.
+- For `connectivity.Ready`, `edsImpl.handlePriorityWithNewStateReady()` return true.
 
-`edsBalancerImpl.updateState()` calls `newDropPicker()` to generates a `dropPicker`.
+`edsBalancerImpl.updateState()` calls `newDropPicker()` to generates a `dropPicker`. We will discuss `newDropPicker()` in the following section.
 
-- `dropPicker` wraps the original `picker`.
-- `dropPicker.Pick()` add drop connection functionality to the `picker`.
-- Here we will not go deeper into drop.
-
-`edsBalancerImpl.updateState()` calls `edsImpl.cc.UpdateState()` to forward the state and new drop picker to parent `ClientConn`.
+`edsBalancerImpl.updateState()` calls `edsImpl.cc.UpdateState()` to forward the state and new drop picker to `ccWrapper`.
 
 ```go
 // updateState first handles priority, and then wraps picker in a drop picker
@@ -851,7 +1106,16 @@ func (edsImpl *edsBalancerImpl) handlePriorityWithNewStateReady(priority priorit
     }
     return true
 }
+```
 
+`dropPicker` wraps the original `picker` and provides dropping connection feature.
+
+- The `drops` field is initialized by `edsImpl.drops`.
+- `dropPicker.Pick()` adds drop policies support.
+- `dropPicker.Pick()` also provides `counter` service for this RPC.
+- Here we will not go deeper into drop.
+
+```go
 type dropPicker struct {
     drops     []*dropper
     p         balancer.Picker
@@ -917,74 +1181,13 @@ func (d *dropPicker) Pick(info balancer.PickInfo) (balancer.PickResult, error) {
 }
 ```
 
-`ccWrapper.UpdateState()` calls `newLoadReportPicker()` to wrap the `Picker` with `loadReportPicker`.
+Let's continue the discussion of `edsBalancerImpl.updateState()`. `edsBalancerImpl.updateState()` calls `edsImpl.cc.UpdateState()`.
 
-- `loadReportPicker.Pick()` adds load report action besides the original pick action.
+- `edsImpl.cc` is `ccWrapper`.
+- The `ccWrapper` doesn't have a `UpdateState()` method. `ccWrapper` has a embedded `balancer.ClientConn` field.
+- The embedded `balancer.ClientConn` is `subBalancerWrapper`. `subBalancerWrapper` has a `UpdateState()`.
 
-`ccWrapper.UpdateState()` calls `ccw.ClientConn.UpdateState()` to forward the state to upper level.
-
-```go
-func (ccw *ccWrapper) UpdateState(s balancer.State) {
-    s.Picker = newLoadReportPicker(s.Picker, ccw.localityIDJSON, ccw.loadStore)
-    ccw.ClientConn.UpdateState(s)
-}
-
-// loadReporter wraps the methods from the loadStore that are used here.
-type loadReporter interface {
-    CallStarted(locality string)
-    CallFinished(locality string, err error)
-    CallServerLoad(locality, name string, val float64)
-}
-
-type loadReportPicker struct {
-    p balancer.Picker
-
-    locality  string
-    loadStore loadReporter
-}
-
-func newLoadReportPicker(p balancer.Picker, id string, loadStore loadReporter) *loadReportPicker {
-    return &loadReportPicker{
-        p:         p,
-        locality:  id,
-        loadStore: loadStore,
-    }
-}
-
-func (lrp *loadReportPicker) Pick(info balancer.PickInfo) (balancer.PickResult, error) {
-    res, err := lrp.p.Pick(info)
-    if err != nil {
-        return res, err
-    }
-
-    if lrp.loadStore == nil {
-        return res, err
-    }
-
-    lrp.loadStore.CallStarted(lrp.locality)
-    oldDone := res.Done
-    res.Done = func(info balancer.DoneInfo) {
-        if oldDone != nil {
-            oldDone(info)
-        }
-        lrp.loadStore.CallFinished(lrp.locality, info.Err)
-
-        load, ok := info.ServerLoad.(*orcapb.OrcaLoadReport)
-        if !ok {
-            return
-        }
-        lrp.loadStore.CallServerLoad(lrp.locality, serverLoadCPUName, load.CpuUtilization)
-        lrp.loadStore.CallServerLoad(lrp.locality, serverLoadMemoryName, load.MemUtilization)
-        for n, d := range load.RequestCost {
-            lrp.loadStore.CallServerLoad(lrp.locality, n, d)
-        }
-        for n, d := range load.Utilization {
-            lrp.loadStore.CallServerLoad(lrp.locality, n, d)
-        }
-    }
-    return res, err
-}
-```
+That means `edsImpl.cc.UpdateState()` is `subBalancerWrapper.UpdateState()`.
 
 - `subBalancerWrapper.UpdateState()` stores the state in `sbc.state`.
 - `subBalancerWrapper.UpdateState()` calls `sbc.group.updateBalancerState()` to forward the state and `sbc.id` to `BalancerGroup`.
@@ -1001,11 +1204,9 @@ func (sbc *subBalancerWrapper) UpdateState(state balancer.State) {
 
 `updateBalancerState()` wraps the picker to do load reporting if `loadStore` was set.
 
-- `newLoadReportPicker()` generates `loadReportPicker`.
-- `loadReportPicker.Pick()` calls `lrp.p.Pick()` to let the original `picker` does the job.
-- `loadReportPicker.Pick()` perform load reporting job for this RPC. We will not discuss load reporting in this article.
+For `bal.bg`, `BalancerGroup.loadStore` is set to nil. `BalancerGroup.updateBalancerState()` calls `bg.stateAggregator.UpdateState()` to send new state to the `balancerStateAggregator`.
 
-`updateBalancerState()` calls `bg.stateAggregator.UpdateState()` to send new state to the `aggregator`.
+- Please note the difference between this `BalancerGroup` and [Load report picker](#load-report-picker).
 
 ```go
 // updateBalancerState: forward the new state to balancer state aggregator. The
@@ -1028,12 +1229,18 @@ func (bg *BalancerGroup) updateBalancerState(id string, state balancer.State) {
 }
 ```
 
-- `balancerStateAggregator.UpdateState()` first updates the state in `bsa.idToPickerState[id]`.
-- `balancerStateAggregator.UpdateState()` calls `bsa.build()` to update the state.
-  - `bsa.build()` iterates `bsa.idToPickerState` to set `aggregatedState`.
-  - `bsa.build()` calls `newPickerGroup()` to set `picker`.
-  - `bsa.build()` generates `balancer.State` based on `aggregatedState` and `picker`.
-- `balancerStateAggregator.UpdateState()` calls `bsa.cc.UpdateState()` to propagate the state to next level.
+### Picker group
+
+`balancerStateAggregator.UpdateState()` first updates the state in `bsa.idToPickerState[id]`.
+
+`balancerStateAggregator.UpdateState()` calls `bsa.build()` to update the state.
+
+- `bsa.build()` checks `bsa.idToPickerState` to set `aggregatedState`.
+- `bsa.build()` calls `newPickerGroup()` to build a wrapper `Picker`.
+- `bsa.build()` generates `balancer.State` based on `aggregatedState` and `Picker`.
+- We will discuss `newPickerGroup()` in the following section.
+
+`balancerStateAggregator.UpdateState()` calls `bsa.cc.UpdateState()` to propagate the state to `ccBalancerWrapper`.
 
 ```go
 // UpdateState is called to report a balancer state change from sub-balancer.
@@ -1062,6 +1269,33 @@ func (bsa *balancerStateAggregator) UpdateState(id string, state balancer.State)
         return
     }
     bsa.cc.UpdateState(bsa.build())
+}
+
+type balancerStateAggregator struct {
+    cc     balancer.ClientConn
+    logger *grpclog.PrefixLogger
+
+    mu sync.Mutex
+    // If started is false, no updates should be sent to the parent cc. A closed
+    // sub-balancer could still send pickers to this aggregator. This makes sure
+    // that no updates will be forwarded to parent when the whole balancer group
+    // and states aggregator is closed.
+    started bool
+    // All balancer IDs exist as keys in this map, even if balancer group is not
+    // started.
+    //
+    // If an ID is not in map, it's either removed or never added.
+    idToPickerState map[string]*subBalancerState
+}
+
+type subBalancerState struct {
+    state balancer.State
+    // stateToAggregate is the connectivity state used only for state
+    // aggregation. It could be different from state.ConnectivityState. For
+    // example when a sub-balancer transitions from TransientFailure to
+    // connecting, state.ConnectivityState is Connecting, but stateToAggregate
+    // is still TransientFailure.
+    stateToAggregate connectivity.State
 }
 
 // build combines sub-states into one. The picker will do a child pick.
@@ -1106,7 +1340,15 @@ func (bsa *balancerStateAggregator) build() balancer.State {
         Picker:            newPickerGroup(bsa.idToPickerState),
     }
 }
+```
 
+`newPickerGroup()` creates a `pickerGroup`.  `newPickerGroup()` adds all the `idToPickerState` to `pickers` field.
+
+- `pickerGroup.Pick()` finds the cluster name from the `Context` parameter.
+- `pickerGroup.Pick()` finds the `picker` which name is the cluster name that we just found.
+- `pickerGroup.Pick()` calls `p.Pick()` to return the `balancer.PickResult`.
+
+```go
 // pickerGroup contains a list of pickers. If the picker isn't ready, the pick
 // will be queued.
 type pickerGroup struct {
@@ -1175,5 +1417,6 @@ func (pw *pickerWrapper) updatePicker(p balancer.Picker) {
 }
 ```
 
-## Pick connection
+## Pick a connection
 
+![xDS picker stack](../images/images.021.png)
