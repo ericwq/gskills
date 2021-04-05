@@ -7,9 +7,10 @@
   - [Weighted picker group](#weighted-picker-group)
   - [Drop picker](#drop-picker)
   - [Picker group](#picker-group)
+  - [Prepare for picker](#prepare-for-picker)
 - [Pick a connection](#pick-a-connection)
 
-Through the discussion from [xDS protocol - LDS/RDS](lds.md) and [xDS protocol - CDS/EDS](cds.md), we have connected with the upstream server. There is a key question to answer: For each RPC request which connection will be used ? Who decide it?
+Through the discussion from [xDS protocol - LDS/RDS](lds.md) and [xDS protocol - CDS/EDS](cds.md), we have connected with the upstream server. There is a key question need to answer: For each RPC request which connection will be used ? Who decide it?
 
 There are three phases:
 
@@ -86,7 +87,19 @@ const (
 )
 ```
 
+The cluster manager has a balancer group, which contains CDS balancers. Each CDS balancer has a EDS balancer. The EDS balancer also has a balancer group, which contains endpoint balancers. See [xDS wrappers](wrappers.md) for detail. The connection state update will be very complex. All the above mentioned balancers and balancer group will get involved.
+
+In this stage, xDS will updates the connection state and generates `picker` to gRPC core. Here is the map for this stage. In this map:
+
 ![xDS protocol: 9](../images/images.017.png)
+
+- Yellow box represents the important type and method/function.
+- Green box represents a function run in a dedicated goroutine.
+- Arrow represents the call direction and order.
+- Pink arrow represents the channel communication for `b.updateCh`.
+- Green arrow represents the channel communication for `x.childPolicyUpdate` and `x.grpcUpdate`.
+- Left red dot represents the box is a continue part from other map.
+- Right red dot represents there is a extension map for that box.
 
 `bal.UpdateSubConnState()` calls `b.bg.UpdateSubConnState()` and forwards `SubConn`, `SubConnState` to `BalancerGroup`.
 
@@ -1381,10 +1394,12 @@ func getPickedCluster(ctx context.Context) string {
 }
 ```
 
+### Prepare for picker
+
+`ccBalancerWrapper.UpdateState()` updates picker befoe updating state. The `pickerWrapper` needs `pw.picker` to be set when the connection state changed.
+
 - `ccBalancerWrapper.UpdateState()` calls `ccb.cc.blockingpicker.updatePicker()` to set `s.Picker`.
 - `ccBalancerWrapper.UpdateState()` calls `ccb.cc.csMgr.updateState()` to set the `s.ConnectivityState`.
-
-Please refer to [Watch sub-connection update](dial.md#watch-sub-connection-update) for detail description.
 
 ```go
 func (ccb *ccBalancerWrapper) UpdateState(s balancer.State) {
@@ -1414,6 +1429,84 @@ func (pw *pickerWrapper) updatePicker(p balancer.Picker) {
     close(pw.blockingCh)
     pw.blockingCh = make(chan struct{})
     pw.mu.Unlock()
+}
+```
+
+`connectivityStateManager.updateState()` updates `csm.state` and notifies `ClientConn` by `close(csm.notifyChan)`.
+
+```go
+// updateState updates the connectivity.State of ClientConn.
+// If there's a change it notifies goroutines waiting on state change to
+// happen.
+func (csm *connectivityStateManager) updateState(state connectivity.State) {
+    csm.mu.Lock()
+    defer csm.mu.Unlock()
+    if csm.state == connectivity.Shutdown {
+        return
+    }
+    if csm.state == state {
+        return
+    }
+    csm.state = state
+    channelz.Infof(logger, csm.channelzID, "Channel Connectivity change to %v", state)
+    if csm.notifyChan != nil {
+        // There are other goroutines waiting on this channel.
+        close(csm.notifyChan)
+        csm.notifyChan = nil
+    }
+}
+
+func (csm *connectivityStateManager) getState() connectivity.State {
+    csm.mu.Lock()
+    defer csm.mu.Unlock()
+    return csm.state
+}
+
+func (csm *connectivityStateManager) getNotifyChan() <-chan struct{} {
+    csm.mu.Lock()
+    defer csm.mu.Unlock()
+    if csm.notifyChan == nil {
+        csm.notifyChan = make(chan struct{})
+    }
+    return csm.notifyChan
+}
+```
+
+Please refer to [Determine resolver builder](dial.md#determine-resolver-builder). That section explains how to wait for a blocking dial via `cc.GetState()` and `cc.WaitForStateChange()`.
+
+- `ClientConn.WaitForStateChange()` waits until the `connectivity.State` of `ClientConn` changes from `sourceState` or context expires.
+- `ClientConn.WaitForStateChange()` communicates with `connectivityStateManager.updateState()` through channel `csm.notifyChan`.
+- Calling `connectivityStateManager.getNotifyChan()` returns `csm.notifyChan`.
+
+```go
+// GetState returns the connectivity.State of ClientConn.
+//
+// Experimental
+//
+// Notice: This API is EXPERIMENTAL and may be changed or removed in a
+// later release.
+func (cc *ClientConn) GetState() connectivity.State {
+    return cc.csMgr.getState()
+}
+
+// WaitForStateChange waits until the connectivity.State of ClientConn changes from sourceState or
+// ctx expires. A true value is returned in former case and false in latter.
+//
+// Experimental
+//
+// Notice: This API is EXPERIMENTAL and may be changed or removed in a
+// later release.
+func (cc *ClientConn) WaitForStateChange(ctx context.Context, sourceState connectivity.State) bool {
+    ch := cc.csMgr.getNotifyChan()
+    if cc.csMgr.getState() != sourceState {
+        return true
+    }
+    select {
+    case <-ctx.Done():
+        return false
+    case <-ch:
+        return true
+    }
 }
 ```
 
