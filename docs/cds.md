@@ -12,7 +12,7 @@
 - [Initialize endpoints](eds2.md)
 - [Prepare for connect](conn.md)
 - [Connect to upstream server](conn2.md)
-- [xDS picker](picker.md)
+- [xDS pick](picker.md)
 - [xDS wrappers](wrappers.md)
 
 In the previous article [xDS protocol - LDS/RDS](lds.md), we discussed the xDS resolver and LDS/RDS. In this article we will discuss the xDS balancer and CDS/EDS. Why gRPC separates the ADS into two phases: LDS and CDS? In my guess: RDS returns a group of cluster name based on the domain matched `Route`. The matching `path` and other matching criteria can only be performed after we receive a real RPC request. It has to postpone the CDS/EDS to that time.
@@ -234,6 +234,8 @@ func SetConfigSelector(state resolver.State, cs ConfigSelector) resolver.State {
 
 In this stage, we will continue the discussion of xDS protocol: CDS part. With the previous service config in hands, it's the time to initialize the CDS balancer. Here is the map for this stage. In this map:
 
+![xDS protocol: 4](../images/images.012.png)
+
 - Yellow box represents the important type and method/function.
 - Green box represents a function run in a dedicated goroutine.
 - Arrow represents the call direction and order.
@@ -241,8 +243,6 @@ In this stage, we will continue the discussion of xDS protocol: CDS part. With t
 - Dot arrow represents the indirect relationship between two boxes.
 - Left red dot means the box is a continue part from other map.
 - Right red dot means there is another map for that box.
-
-![xDS protocol: 4](../images/images.012.png)
 
 ### Apply service config
 

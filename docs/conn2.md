@@ -1567,4 +1567,4 @@ func (cc *ClientConn) WaitForStateChange(ctx context.Context, sourceState connec
 }
 ```
 
-Now we have connected with the upstream servers and the state & picker is ready to go. It's time to discuss [Pick a connection](picker.md).
+Now we have connected with the upstream servers and the state & picker is ready to go. It's time to discuss [xDS pick](picker.md).
