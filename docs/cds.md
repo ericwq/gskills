@@ -1,4 +1,3 @@
-
 # xDS protocol - CDS/EDS
 
 - [Example Service Config](#example-service-config)
@@ -12,7 +11,7 @@
 - [Initialize endpoints](eds2.md)
 - [Prepare for connect](conn.md)
 - [Connect to upstream server](conn2.md)
-- [xDS pick](picker.md)
+- [xDS picker](picker.md)
 - [xDS wrappers](wrappers.md)
 
 In the previous article [xDS protocol - LDS/RDS](lds.md), we discussed the xDS resolver and LDS/RDS. In this article we will discuss the xDS balancer and CDS/EDS. Why gRPC separates the ADS into two phases: LDS and CDS? In my guess: RDS returns a group of cluster name based on the domain matched `Route`. The matching `path` and other matching criteria can only be performed after we receive a real RPC request. It has to postpone the CDS/EDS to that time.
