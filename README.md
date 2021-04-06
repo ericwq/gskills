@@ -14,12 +14,14 @@ Done:
 - `xDS protocol - LDS/RDS` and `xDS protocol - CDS/EDS` is done.
 - `Send Request` is completely rewritten.
 - `Send Response` is completely rewritten.
-- `The transport` is down. This chapter provide whole picture from the view of transport.
+- `The transport` is done. This chapter provide whole picture from the view of transport.
+- `xDS wrappers` is done. The xDS class diagram for main type.
+- `XDS picker` is done. How to choose the endpoint during RPC calling?
 
 Plan:
 
-- How to choose the endpoint during RPC calling? `xDS protocol` still needs an extra article.
 - Plan to write `Stream dial`, `Stream request and response`.
+- Load reporting service
 
 ## Content
 
