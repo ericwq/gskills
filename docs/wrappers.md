@@ -9,7 +9,7 @@
 
 ## xDS wrappers
 
-xDS use a log of interfaces and wrappers. E.g. `balancer.ClientConn` represents a gRPC `ClientConn`. In gRPC, different module uses different wrapper which implements the same interface. `ccBalancerWrapper` and `subBalancerWrapper` are typical wrappers. They implement the same interface with different behavior. If you want to understand the source code of xDS, it is better to find out the interface is implemented by which wrappers.
+xDS use a lot of interfaces and wrappers. E.g. `balancer.ClientConn` represents a gRPC `ClientConn`. In gRPC, different module uses different wrapper which implements the same interface. `ccBalancerWrapper` and `subBalancerWrapper` are typical wrappers. They implement the same interface with different behavior. If you want to understand the source code of xDS, it is better to find out the interface is implemented by which wrappers.
 
 The following diagram is the quick answer for the above questions. The following sections describe how this diagram is formed.
 

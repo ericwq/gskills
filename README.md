@@ -11,41 +11,34 @@ Get a quick glimpse from the following diagram. See  [Balancer and Resolver API]
 
 Done:
 
-- `xDS protocol - LDS/RDS` and `xDS protocol - CDS/EDS` is done.
-- `Send Request` is completely rewritten.
-- `Send Response` is completely rewritten.
-- `The transport` is done. This chapter provide whole picture from the view of transport.
-- `xDS wrappers` is done. The xDS class diagram for main type.
-- `XDS picker` is done. How to choose the endpoint during RPC calling?
+- 2021/03/29 `xDS protocol - LDS/RDS` is done
+- 2021/04/06 `xDS protocol - CDS/EDS` is done.
+- 2020/03/19 `Send Request` is completely rewritten.
+- 2020/03/19 `Send Response` is completely rewritten.
+- 2021/03/28 `Client dial` is completely rewritten.
+- 2021/03/18 `The transport` is done. This chapter provide whole picture from the view of transport.
+- 2021/04/03 `xDS wrappers` is done. The xDS class diagram for main type.
+- 2021/04/06 `XDS picker` is done. How to choose the endpoint during RPC calling?
 
 Plan:
 
-- Plan to write `Stream dial`, `Stream request and response`.
+- `Stream dial`, `Stream request and response`.
 - Load reporting service
+- RPC filter
 
 ## Content
 
-### [Client Dial](docs/dial.md)
-
-### [Send Request](docs/request.md)
-
-### [Send Response](docs/response.md)
-
-### [Request parameters](docs/parameters.md)
-
-### [controlBuffer, loopyWriter and framer](docs/control.md)
-
-### [The transport](docs/transport.md)
-
-### [Interceptor](docs/interceptor.md)
-
-### [Authentication](docs/auth.md)
-
-### [Load Balancing - Client](docs/load.md)
-
-### [xDS protocol - LDS/RDS](docs/lds.md)
-
-### [xDS protocol - CDS/EDS](docs/cds.md)
+- [Client Dial](docs/dial.md)
+- [Send Request](docs/request.md)
+- [Send Response](docs/response.md)
+- [Request parameters](docs/parameters.md)
+- [controlBuffer, loopyWriter and framer](docs/control.md)
+- [The transport](docs/transport.md)
+- [Interceptor](docs/interceptor.md)
+- [Authentication](docs/auth.md)
+- [Load Balancing - Client](docs/load.md)
+- [xDS protocol - LDS/RDS](docs/lds.md)
+- [xDS protocol - CDS/EDS](docs/cds.md)
 
 ## Reading material
 
