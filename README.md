@@ -13,8 +13,8 @@ Done:
 
 - 2021/03/29 `xDS protocol - LDS/RDS` is done
 - 2021/04/06 `xDS protocol - CDS/EDS` is done.
-- 2020/03/19 `Send Request` is completely rewritten.
-- 2020/03/19 `Send Response` is completely rewritten.
+- 2021/03/19 `Send Request` is completely rewritten.
+- 2021/03/19 `Send Response` is completely rewritten.
 - 2021/03/28 `Client dial` is completely rewritten.
 - 2021/03/18 `The transport` is done. This chapter provide whole picture from the view of transport.
 - 2021/04/03 `xDS wrappers` is done. The xDS class diagram for main type.
