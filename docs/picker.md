@@ -12,7 +12,7 @@
 
 Through the discussion from [xDS protocol - LDS/RDS](lds.md) and [xDS protocol - CDS/EDS](cds.md), we have connected with the upstream server. There is a key question need to answer: For each RPC request which connection will be used ? Who decide it?
 
-During the discussion, you can refer to [xDS wrappers](wrappers.md#xds-wrappers) to find the invocation target.
+During the discussion, you can refer to [xDS wrappers](wrappers.md#xds-wrappers) to find the type relationship.
 
 ## Build config selector
 
@@ -85,7 +85,7 @@ func (r *xdsResolver) run() {
 }
 ```
 
-`xdsResolver.newConfigSelector()` builds the `configSelector` based on the parameter `serviceUpdate`.
+`xdsResolver.newConfigSelector()` builds the `configSelector` based on the parameter `serviceUpdate`. In my view, `configSelector` is mainly used for route matching, the result of route matching is the cluster name. It is named `configSelector` in gRPC.
 
 ```go
 // newConfigSelector creates the config selector for su; may add entries to
@@ -220,7 +220,7 @@ type ConfigSelector interface {
 
 In [Initialize CDS balancer](cds.md#initialize-cds-balancer) section, `ClientConn.updateResolverState()` is called to create the `ccBalancerWrapper`, cluster manager balancer and CDS balancer.
 
-- In `ClientConn.updateResolverState()`, `s.ServiceConfig` is not nil.
+- In `ClientConn.updateResolverState()`, in our case, `s.ServiceConfig` is not nil. It is set by `xdsResolver.sendNewServiceConfig()`.
 - `ClientConn.updateResolverState()` calls `iresolver.GetConfigSelector()` to extract `ConfigSelector` from `state.Attributes`.
 - `ClientConn.updateResolverState()` calls `cc.applyServiceConfigAndBalancer()` to apply the service config and config selector.
 
@@ -320,10 +320,10 @@ func GetConfigSelector(state resolver.State) ConfigSelector {
 }
 ```
 
-- `ClientConn.applyServiceConfigAndBalancer()` calls `cc.safeConfigSelector.UpdateConfigSelector()` to update the `cc.safeConfigSelector`.
-- `ClientConn.applyServiceConfigAndBalancer()` initializes the `ccBalancerWrapper`, cluster manager balancer. See [Create cluster manager](cds.md#create-cluster-manager) for detail.
+Please note `ClientConn.safeConfigSelector` contains a `xdsResolver.curConfigSelector` which is protected by a `mutex`.
 
-Please note `ClientConn.safeConfigSelector` has a `xdsResolver.curConfigSelector`.
+- `ClientConn.applyServiceConfigAndBalancer()` calls `cc.safeConfigSelector.UpdateConfigSelector()` to update the `ConfigSelector`.
+- `ClientConn.applyServiceConfigAndBalancer()` initializes the `ccBalancerWrapper`, cluster manager balancer. See [Create cluster manager](cds.md#create-cluster-manager) for detail.
 
 ```go
 func (cc *ClientConn) applyServiceConfigAndBalancer(sc *ServiceConfig, configSelector iresolver.ConfigSelector, addrs []resolver.Address) {
@@ -401,12 +401,12 @@ func (scs *SafeConfigSelector) UpdateConfigSelector(cs ConfigSelector) {
 
 ![images/images.003.png](../images/images.003.png)
 
-Let's assume the connection to upstream server is ready. The client can send the PRC request now. During [Send request](request.md), the request need a stream. In [Pick stream transport](request.md#pick-stream-transport) section,
+Let's assume the connections to upstream server is ready. The client can send the PRC request now. During [Send request](request.md), the request need a stream. In [Pick stream transport](request.md#pick-stream-transport) section,
 
 - `newClientStream` calls `cc.safeConfigSelector.SelectConfig()` to prepare for the `rpcConfig`.
   - For `helloworld` example, `method` parameter is `"/helloworld.Greeter/SayHello"`.
 - `newClientStream` calls `newStream()`.
-  - In our case, we discuss the no interceptor version. `newStream()` forwards to `newClientStreamWithParams()`.
+  - In our case, we discuss the no interceptor version. `newStream()` forwards calling to `newClientStreamWithParams()`.
 
 Let's discuss `cc.safeConfigSelector.SelectConfig()` first.
 
@@ -572,7 +572,7 @@ func SetPickedCluster(ctx context.Context, cluster string) context.Context {
 }
 ```
 
-Let's back to discuss `newClientStreamWithParams()`.
+Let's back to `newClientStreamWithParams()`.
 
 - `newClientStreamWithParams()` generates `clientStream`, note the `ctx` parameter is assigned to `clientStream.ctx` field.
 - Remember the `ctx` parameter contains the cluster name.
@@ -812,18 +812,16 @@ func (cc *ClientConn) getTransport(ctx context.Context, failfast bool, method st
 ![xDS picker stack](../images/images.021.png)
 
 - Yellow box represents important type and main field, "::" represents the field name.
-- Blue line represents the most important relationship between two types.
 - `1   *` represents one to many relationship.
-- Red line highlights path of `ClientConn`.
 - Black line and text represents the significant relationship between tow types.
 
-Combine the information from [Update sub-connection state](conn2.md#update-sub-connection-state) and [Update state](conn2.md#update-state). We get the above xDS picker stack diagram.
+In xDS dial process, during [Update sub-connection state](conn2.md#update-sub-connection-state) and [Update state](conn2.md#update-state), gRPC prepares the above xDS picker stack.
 
 `cc.blockingpicker` is `pickerWrapper`. `cc.blockingpicker.pick()` is `pickerWrapper.pick()`.
 
 - The `pickerWrapper.picker` is set by `ccBalancerWrapper.UpdateState()`. Please see [Prepare for picker](conn2.md#prepare-for-picker).
 - `pickerWrapper.pick()` calls `p.Pick()`, which is actually `pickerWrapper.picker.Pick()`.
-- From the above xDS picker stack we know that a picker stack will be called by `pickerWrapper.picker.Pick()`.
+- The above xDS picker stack will be called by `pickerWrapper.picker.Pick()`.
 
 Next we will discuss the picker stack one by one.
 
