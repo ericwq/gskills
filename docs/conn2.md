@@ -32,7 +32,7 @@ xDS endpoint connect is very similar to [Dial process part II](dial.md#dial-proc
 
 You should remember the result of xDS endpoint connect: After the calling of `addrConn.connect()`, `ac.resetTransport()` goroutine will runs in the background (asynchronously) and connects with the specified endpoint. The established connection is stored in `ac.transport` for later using.
 
-During the discussion, you can refer to [xDS wrappers](wrappers.md#xds-wrappers) to find the invocation target.
+During the discussion, you can refer to [xDS wrappers](wrappers.md#xds-wrappers) to find the type relationship.
 
 Now we have connected with the upstream server. gRPC need to be notified.  There are two phases:
 
